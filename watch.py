@@ -1012,7 +1012,8 @@ def process_commands(state: dict) -> int:
     if not messages:
         return 0
     for text in messages:
-        log("command received: %s" % text.split()[0] if text.split() else "?")
+        words = text.split()
+        log("command received: %s" % (words[0] if words else "(empty)"))
         try:
             reply = handle_command(text, state)
         except Exception as exc:  # a bad command must never kill the run

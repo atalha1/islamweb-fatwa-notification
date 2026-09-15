@@ -192,6 +192,86 @@ python watch.py --mark-answered q-001 --fatwa-url https://www.islamweb.net/...
 
 ---
 
+## After you submit: tracking and pausing
+
+Once a question is in, watching the submission page is pure waste, and what you
+actually want to know is when the answer appears. Both are handled.
+
+### Telling it you submitted
+
+```bash
+python watch.py --mark-sent q-001 --ref 447769
+```
+
+or, from your phone, message the Telegram bot:
+
+```
+/sent q-001 447769
+```
+
+`--ref` takes **either** the question number Islamweb gives you **or** a full
+link — both work. That one command does three things:
+
+1. marks the question `sent` in the queue,
+2. records what to watch for an answer,
+3. **pauses submission-page polling**, so nothing is requested until you ask for
+   the next window with `/resume`.
+
+If you don't have a number yet, `/sent q-001` still works and pauses; attach the
+reference later with `/track q-001 447769`.
+
+### Getting told when it is answered
+
+Tracked questions are checked every 6 hours (`tracking.check_interval_hours`).
+When the fatwa is published you get a message with the link, and the queue entry
+becomes `answered` with `answered_at` and `fatwa_url` filled in.
+
+Check a reference resolves before trusting it — this sends nothing and changes
+nothing:
+
+```bash
+python watch.py --check-ref 447769
+```
+
+**How "answered" is detected.** Not guessed — derived by diffing real pages:
+
+| Page | Carries |
+|---|---|
+| `/ar/fatwa/447769/` (a real fatwa) | `تم نسخ الرابط` (the share widget), no not-found phrase |
+| `/ar/fatwa/1/`, `/ar/fatwa/100000/` (no such fatwa) | `لا يوجد فتوي بهذا الرقم`, no share widget |
+
+Two traps, both handled and both pinned by tests:
+
+* **The trailing slash is load-bearing.** `/ar/fatwa/447769` *without* it returns
+  the not-found page even though the fatwa exists. The URL template includes it.
+* **The not-found page contains `رقم السؤال`**, which matches the `السؤال`
+  published marker. Not-published is therefore checked *first*. Do not reorder
+  that — a false "your question was answered" alert is much worse than a late one.
+
+### Controlling it from your phone
+
+**CallMeBot's WhatsApp bridge is send-only — you cannot message it back.**
+Telegram is the control channel.
+
+| Command | What it does |
+|---|---|
+| `/pause` | stop checking the submission page |
+| `/resume` | start checking it again |
+| `/status` | what it's doing, what's queued, what's awaiting an answer |
+| `/sent <id> [ref]` | mark submitted, pause, and start tracking |
+| `/track <id> <ref>` | attach a number or link to an already-sent question |
+| `/check` | check tracked questions for answers right now |
+| `/next` | show the question that would be sent next |
+| `/help` | the list above |
+
+Commands are read at the start of every run and every 2 hours by the `answers`
+workflow, so a `/resume` reaches even a fully paused watcher. **Only the chat id
+in `TELEGRAM_CHAT_ID` is obeyed** — someone who finds your bot cannot pause your
+watcher.
+
+A paused watcher makes **no requests to the watched site at all**. It still
+reads Telegram and still tracks answers, which is what lets `/resume` work.
+
 ## Alerts
 
 **Primary — WhatsApp via CallMeBot:** `GET https://api.callmebot.com/whatsapp.php`
@@ -245,6 +325,11 @@ hours fill instantly. That dataset decides which hour to target.
 pip install -r requirements-dev.txt
 
 python watch.py --once           # one check, prints the state, sends NOTHING
+python watch.py --status         # paused or active, queue counts, what's next
+python watch.py --pause          # stop polling the submission page
+python watch.py --resume         # start again
+python watch.py --check-ref 447769   # does this number resolve? sends nothing
+python watch.py --check-answers      # poll tracked questions now
 python watch.py --dump           # page structure: forms, fields, decoded text
 python watch.py --check-robots   # robots.txt verdict + the full file
 python watch.py --test-alert     # one test message through BOTH channels
@@ -361,8 +446,10 @@ watch.py                            the whole tool
 questions/queue.yaml                your question queue
 log/observations.csv                one row per poll, committed by CI
 state.json                          alert cooldowns and the retry flag (created on first run)
+config.yaml                         everything tunable: site, markers, hours
 .github/workflows/watch.yml         the hourly poller
+.github/workflows/answers.yml       Telegram commands + answer tracking
 .github/workflows/tests.yml         CI
 .github/workflows/daily-reminder.yml  degraded mode, disabled by default
-tests/                              67 tests
+tests/                              146 tests
 ```
