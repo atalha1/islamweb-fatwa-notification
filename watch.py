@@ -52,7 +52,10 @@ except ImportError:  # pragma: no cover - only hit when deps are missing
 # Constants
 # --------------------------------------------------------------------------
 
-REPO_URL = "https://github.com/atalha1/islamweb-watcher"
+# The contact URL in the User-Agent must resolve, so it names the repo as it
+# exists today. GitHub permanently redirects the old URL after a rename, so
+# this keeps working if the repo is renamed to islamweb-watcher.
+REPO_URL = "https://github.com/atalha1/islamweb-fatwa-notification"
 USER_AGENT = (
     "islamweb-watcher/1.0 (notification-only availability checker; "
     "read-only, never submits; +%s)" % REPO_URL

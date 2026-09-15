@@ -143,6 +143,10 @@ immediately after the first successful alert.
 Makkah is UTC+3 with no DST, so the top of the hour is the same instant in both
 zones — no conversion is needed for the schedule itself.
 
+> **Cost.** A run polls for up to 20 minutes, so this is ~480 Actions minutes a
+> day. That is free on a public repository and blows through the free quota in
+> about four days on a private one. See Step 0 of the setup.
+
 > **Known limitation.** GitHub's scheduler is best-effort and can fire several
 > minutes late when the platform is busy. `watch.py` computes its window from
 > the real wall clock rather than from its start time, so a late start still
@@ -264,10 +268,33 @@ uncomment the `schedule:` block in `daily-reminder.yml` and set the hour.
 
 ---
 
-## Manual setup — 4 steps
+## Manual setup
 
-**1. Get a CallMeBot API key** (about a minute).
-Save `+34 644 51 95 23` to your phone's contacts as *CallMeBot*, then send it
+### Step 0 — make the repository public (do this one first)
+
+This repository is currently **private**, and that is not cosmetic. On a private
+repository GitHub Actions is metered: the free tier gives 2,000 minutes a month.
+This watcher runs up to 20 minutes every hour, which is roughly **480 minutes a
+day** — the monthly quota is gone in about four days and the watcher silently
+stops running. **On a public repository Actions minutes are unlimited**, which is
+what this design assumes.
+
+Repository → **Settings → General → Danger Zone → Change visibility → Make
+public**.
+
+While you are on that page, **Settings → General → Repository name**: rename it
+to `islamweb-watcher` if you want the name you asked for. GitHub permanently
+redirects the old URL, so nothing breaks — not your local clone's remote, and not
+the contact URL in the watcher's User-Agent.
+
+Nothing in this repository contains a secret: the four credentials live in
+Actions secrets, never in the tree, and `.env` is gitignored. The observations
+log and the question queue are the only data here, and both are meant to be
+shared.
+
+### Step 1 — get a CallMeBot API key 
+
+Takes about a minute. Save `+34 644 51 95 23` to your phone's contacts as *CallMeBot*, then send it
 this exact WhatsApp message:
 
 ```
@@ -276,18 +303,21 @@ I allow callmebot to send me messages
 
 It replies with your API key. The key is tied to the number you messaged from.
 
-**2. Create a Telegram bot for the fallback** (optional but recommended).
+### Step 2 — create a Telegram bot for the fallback (optional but recommended)
+
 Message [@BotFather](https://t.me/BotFather) → `/newbot` → follow the prompts →
 copy the token. Then send your new bot any message, open
 `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser, and copy
 `result[0].message.chat.id`.
 
-**3. Add the four secrets.**
+### Step 3 — add the four secrets
+
 Repository → **Settings → Secrets and variables → Actions → New repository
 secret**. Add `CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY`, `TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_CHAT_ID`.
 
-**4. Let the workflow commit the log.**
+### Step 4 — let the workflow commit the log
+
 Repository → **Settings → Actions → General → Workflow permissions** → select
 **Read and write permissions** → Save. Without this the watcher still alerts,
 but cannot commit `log/observations.csv`.
@@ -334,5 +364,5 @@ state.json                          alert cooldowns and the retry flag (created 
 .github/workflows/watch.yml         the hourly poller
 .github/workflows/tests.yml         CI
 .github/workflows/daily-reminder.yml  degraded mode, disabled by default
-tests/                              65 tests
+tests/                              67 tests
 ```
