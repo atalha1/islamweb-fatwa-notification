@@ -1,0 +1,84 @@
+# Polls the Islamweb fatwa page and notifies a human when the form opens.
+# It NEVER submits the form - see the header of watch.py.
+name: watch
+
+on:
+  schedule:
+    # 52 minutes past every hour, UTC. Makkah is UTC+3 with no DST, so the
+    # top of the hour is the same instant in both zones.
+    # NOTE: GitHub's scheduler is best-effort and can fire several minutes
+    # late under load. watch.py computes its own window from the wall clock,
+    # so a late start still polls up to :12. If you keep missing the window,
+    # change this to '45 * * * *' - the script simply polls a bit longer.
+    - cron: '52 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'What to run'
+        required: true
+        default: 'run'
+        type: choice
+        options: [run, once, check-robots, test-alert]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: islamweb-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check robots.txt
+        # Informational: watch.py re-checks this itself and refuses to poll
+        # if the page is disallowed. Never fails the job.
+        run: python watch.py --check-robots || true
+
+      - name: Run the watcher
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          case "${{ inputs.mode || 'run' }}" in
+            once)         python watch.py --once ;;
+            check-robots) python watch.py --check-robots ;;
+            test-alert)   python watch.py --test-alert ;;
+            *)            python watch.py --run ;;
+          esac
+
+      - name: Commit observations
+        if: always()
+        run: |
+          set -u
+          git config user.name  "islamweb-watcher"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add log/observations.csv state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No new observations to commit."
+            exit 0
+          fi
+          git commit -m "log: observations $(date -u +%Y-%m-%dT%H:%MZ)"
+          for attempt in 1 2 3 4; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Pushed on attempt ${attempt}."
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::warning::Could not push observations after 4 attempts."

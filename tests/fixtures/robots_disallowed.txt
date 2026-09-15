@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /ar/fatwa/
+Disallow: /cgi-bin/
+
+User-agent: Googlebot
+Allow: /

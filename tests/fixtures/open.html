@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head><meta charset="utf-8"><title>اسأل عن فتوى - إسلام ويب</title></head>
+<body>
+  <header>
+    <form method="get" action="/ar/search">
+      <input type="text" name="q" placeholder="بحث">
+    </form>
+  </header>
+  <main>
+    <h1>اسأل عن فتوى</h1>
+    <form id="askForm" method="post" action="/ar/fatwa/ask/send">
+      <input type="text" name="title" required>
+      <textarea name="question" rows="10" required></textarea>
+      <select name="lang"><option value="ar">العربية</option></select>
+      <button type="submit">إرسال</button>
+    </form>
+  </main>
+</body>
+</html>

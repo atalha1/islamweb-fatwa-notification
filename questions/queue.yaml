@@ -1,0 +1,42 @@
+# Questions waiting to be asked on Islamweb, highest priority (lowest number) first.
+#
+# status : queued | sent | answered
+# After you submit a question by hand, run:
+#     python watch.py --mark-sent <id>
+# When the answer is published, run:
+#     python watch.py --mark-answered <id> --fatwa-url https://...
+#
+# Replace these three placeholders with your real questions.
+
+- id: q-001
+  priority: 1
+  status: queued
+  lang: ar
+  title: سؤال تجريبي رقم واحد
+  body: >-
+    ضع هنا نص سؤالك الأول كاملاً. هذا مجرد نص مؤقت للتجربة، استبدله بسؤالك
+    الحقيقي قبل تشغيل الأداة. يُرسل أول ٣٠٠ حرف من هذا النص في رسالة التنبيه.
+  sent_at: null
+  fatwa_url: null
+
+- id: q-002
+  priority: 2
+  status: queued
+  lang: ar
+  title: سؤال تجريبي رقم اثنين
+  body: >-
+    ضع هنا نص سؤالك الثاني كاملاً. استبدل هذا النص المؤقت بسؤالك الحقيقي.
+  sent_at: null
+  fatwa_url: null
+
+- id: q-003
+  priority: 3
+  status: queued
+  lang: en
+  title: Placeholder question three
+  body: >-
+    Replace this placeholder with the full text of your third question. The
+    first 300 characters are included in the alert message so you can paste
+    straight from your phone.
+  sent_at: null
+  fatwa_url: null

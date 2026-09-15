@@ -1,0 +1,10 @@
+User-agent: *
+Disallow: /cgi-bin/
+Disallow: /*?print=
+Allow: /
+Crawl-delay: 10
+
+User-agent: BadBot
+Disallow: /
+
+Sitemap: https://www.islamweb.net/sitemap.xml

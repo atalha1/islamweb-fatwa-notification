@@ -1,0 +1,5 @@
+requests>=2.31,<3
+# queue.yaml is YAML, so a YAML parser is required. PyYAML is a single
+# pure-Python dependency with no transitive deps - the "requests only"
+# rule is about HTTP, and nothing else here needs a third-party package.
+PyYAML>=6.0,<7

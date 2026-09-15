@@ -1,0 +1,38 @@
+# DEGRADED MODE - disabled by default.
+#
+# Enable this ONLY if robots.txt disallows /ar/fatwa/ for generic crawlers.
+# It does no scraping at all: it just sends the next queued question as a
+# reminder once a day, so you can open the page and submit by hand.
+#
+# To enable:
+#   1. Disable the "watch" workflow (Actions tab -> watch -> ... -> Disable).
+#   2. Uncomment the `schedule:` block below and set the hour you want.
+name: daily-reminder
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   # 05:00 UTC = 08:00 Makkah. Change the hour to suit you.
+  #   - cron: '0 5 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Send the reminder
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python watch.py --remind
