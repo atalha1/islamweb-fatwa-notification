@@ -21,11 +21,11 @@ def test_a_run_that_starts_after_the_window_has_a_deadline_in_the_past():
     assert watch.window_deadline(utc(14, 20)) < utc(14, 20)
 
 
-def test_makkah_time_is_utc_plus_three_all_year():
+def test_site_time_is_utc_plus_three_all_year():
     for month in (1, 7):
         moment = datetime(2026, month, 1, 12, 0, tzinfo=timezone.utc)
-        assert watch.makkah_now(moment).hour == 15
-        assert watch.makkah_now(moment).utcoffset() == timedelta(hours=3)
+        assert watch.local_now(moment).hour == 15
+        assert watch.local_now(moment).utcoffset() == timedelta(hours=3)
 
 
 def test_one_open_poll_is_not_enough_to_alert():
@@ -98,7 +98,7 @@ def test_observations_are_appended_with_a_header(monkeypatch, tmp_path):
     watch.record_observation(200, watch.STATE_CLOSED, utc(13, 52))
     watch.record_observation(200, watch.STATE_OPEN, utc(14, 0))
     lines = path.read_text(encoding="utf-8").strip().splitlines()
-    assert lines[0] == "timestamp_utc,timestamp_makkah,http_status,state"
+    assert lines[0] == "timestamp_utc,timestamp_local,http_status,state"
     assert lines[1] == "2026-09-15T13:52:00Z,2026-09-15T16:52:00+03:00,200,CLOSED"
     assert lines[2].endswith(",200,OPEN")
 

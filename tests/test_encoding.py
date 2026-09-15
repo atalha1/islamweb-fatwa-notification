@@ -45,5 +45,5 @@ def test_body_preview_is_capped_at_300_characters():
 
 
 def test_page_url_is_percent_encoded_ascii():
-    watch.FATWA_PAGE_URL.encode("ascii")
-    assert unquote(watch.FATWA_PAGE_PATH) == "/ar/fatwa/اسأل-عن-فتوى"
+    watch.PAGE_URL.encode("ascii")
+    assert unquote(watch.PAGE_PATH) == "/ar/fatwa/اسأل-عن-فتوى"

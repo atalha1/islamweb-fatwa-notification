@@ -1,0 +1,32 @@
+# A registration page that opens at 09:00 local time on weekdays.
+#
+# The giveaway here is an English "registration is closed" banner while shut,
+# and a normal POST form with a textarea once open.
+
+site:
+  name: Example course registration
+  url: https://example.edu/register
+  timezone_offset_hours: -5      # US Eastern, standard time
+  timezone_label: Eastern
+
+detection:
+  closed_markers:
+    - Registration is currently closed
+  closed_fallback_markers:
+    - registration has not yet opened
+    - check back later
+    - no seats available
+  form_field_names: [student_id, course_code, notes, submit]
+  form_fields_required: 2
+  form_action_hints: [register, enroll, signup]
+  require_textarea: true
+
+schedule:
+  active_hours: "8-10"           # only the 08:00-10:00 openings matter
+  poll_interval_seconds: 20
+  window_end_minute: 12
+  consecutive_open_required: 2
+
+alerts:
+  body_preview_chars: 300
+  unknown_alert_cooldown_hours: 24

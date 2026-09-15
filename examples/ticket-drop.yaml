@@ -1,0 +1,38 @@
+# A page with no form at all - a "Buy tickets" link simply appears when the
+# drop goes live.
+#
+# Two things differ from the default setup:
+#   * require_textarea: false, because there is no textarea to key on;
+#   * form_action_hints carries the checkout path, so the <form> wrapping the
+#     buy button is what gets matched.
+#
+# If the page has no <form> either, leave detection to closed_markers alone:
+# their absence is then what "open" means, and UNKNOWN never fires.
+
+site:
+  name: Example ticket drop
+  url: https://example.com/tickets
+  timezone_offset_hours: 0
+  timezone_label: UTC
+
+detection:
+  closed_markers:
+    - Sold out
+  closed_fallback_markers:
+    - not yet on sale
+    - sale has ended
+    - notify me when available
+  form_field_names: [quantity, ticket_type, add_to_cart]
+  form_fields_required: 2
+  form_action_hints: [checkout, cart, purchase]
+  require_textarea: false
+
+schedule:
+  active_hours: "*"              # watch every hour
+  poll_interval_seconds: 20
+  window_end_minute: 12
+  consecutive_open_required: 2
+
+alerts:
+  body_preview_chars: 300
+  unknown_alert_cooldown_hours: 24

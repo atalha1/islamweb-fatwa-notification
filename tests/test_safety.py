@@ -13,7 +13,7 @@ def test_a_post_to_islamweb_raises_instead_of_being_sent():
     session = watch.ReadOnlyIslamwebSession()
     for method in ("POST", "PUT", "PATCH", "DELETE"):
         with pytest.raises(watch.NeverSubmitError):
-            session.request(method, watch.FATWA_PAGE_URL, data={"question": "x"})
+            session.request(method, watch.PAGE_URL, data={"question": "x"})
 
 
 def test_the_guard_covers_subdomains_and_the_convenience_helpers():
@@ -27,7 +27,7 @@ def test_the_guard_covers_subdomains_and_the_convenience_helpers():
 def test_the_source_contains_no_post_to_islamweb():
     source = Path(watch.__file__).read_text(encoding="utf-8")
     lowered = source.lower()
-    assert "requests.post(%s" % watch.FATWA_PAGE_URL not in lowered
+    assert "requests.post(%s" % watch.PAGE_URL not in lowered
     # The only POST in the file is the Telegram sendMessage call.
     post_lines = [ln.strip() for ln in source.splitlines() if "requests.post" in ln
                   or ".post(" in ln]
@@ -56,7 +56,7 @@ def test_secrets_are_redacted_before_logging(monkeypatch):
 
 def test_robots_allowing_the_page():
     text = (FIXTURES / "robots_allowed.txt").read_text(encoding="utf-8")
-    verdict = watch.robots_verdict(text, watch.FATWA_PAGE_PATH)
+    verdict = watch.robots_verdict(text, watch.PAGE_PATH)
     assert verdict["allowed"] is True
     assert verdict["crawl_delay"] == 10
 
@@ -64,7 +64,7 @@ def test_robots_allowing_the_page():
 def test_robots_disallowing_the_fatwa_directory():
     text = (FIXTURES / "robots_disallowed.txt").read_text(encoding="utf-8")
     assert watch.robots_verdict(text, "/ar/fatwa/")["allowed"] is False
-    assert watch.robots_verdict(text, watch.FATWA_PAGE_PATH)["allowed"] is False
+    assert watch.robots_verdict(text, watch.PAGE_PATH)["allowed"] is False
     # A more specific agent group must not be used for the generic check.
     assert watch.robots_verdict(text, "/ar/fatwa/", agent="Googlebot")["allowed"] is True
 

@@ -59,7 +59,7 @@ def test_selected_entry_renders_into_a_message():
     message = watch.compose_open_message(entry)
     assert "q-001" in message
     assert "--mark-sent q-001" in message
-    assert watch.FATWA_PAGE_URL in message
+    assert watch.PAGE_URL in message
 
 
 def test_message_is_still_useful_when_nothing_is_queued():

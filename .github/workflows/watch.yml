@@ -4,13 +4,21 @@ name: watch
 
 on:
   schedule:
-    # 52 minutes past every hour, UTC. Makkah is UTC+3 with no DST, so the
-    # top of the hour is the same instant in both zones.
+    # 52 minutes past the hour, for the hours whose opening we care about.
+    #
+    # A run starting at HH:52 UTC is waiting for the (HH+1):00 opening.
+    # Makkah is UTC+3 with no DST, so 06:52-19:52 UTC covers the 10:00
+    # through 23:00 Makkah openings and stays quiet from midnight to 10:00
+    # Makkah - 14 runs a day instead of 24.
+    #
+    # `schedule.active_hours` in config.yaml is what ACTUALLY enforces this;
+    # this cron just avoids starting runs that would exit immediately. If you
+    # change one, change the other.
+    #
     # NOTE: GitHub's scheduler is best-effort and can fire several minutes
     # late under load. watch.py computes its own window from the wall clock,
-    # so a late start still polls up to :12. If you keep missing the window,
-    # change this to '45 * * * *' - the script simply polls a bit longer.
-    - cron: '52 * * * *'
+    # so a late start still polls up to :12.
+    - cron: '52 6-19 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -18,7 +26,7 @@ on:
         required: true
         default: 'run'
         type: choice
-        options: [run, once, check-robots, test-alert, dump]
+        options: [run, once, check-robots, test-alert, dump, report, show-config]
 
 permissions:
   contents: write
@@ -42,6 +50,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Show the effective configuration
+        run: python watch.py --show-config
+
       - name: Check robots.txt
         # Informational: watch.py re-checks this itself and refuses to poll
         # if the page is disallowed. Never fails the job.
@@ -59,8 +70,14 @@ jobs:
             check-robots) python watch.py --check-robots ;;
             test-alert)   python watch.py --test-alert ;;
             dump)         python watch.py --dump ;;
+            report)       python watch.py --report ;;
+            show-config)  python watch.py --show-config ;;
             *)            python watch.py --run ;;
           esac
+
+      - name: Refresh the observation report
+        if: always()
+        run: python watch.py --report --write >/dev/null || true
 
       - name: Commit observations
         if: always()
@@ -71,6 +88,7 @@ jobs:
           # Add each path separately: `git add a b` with a missing b
           # stages neither, which silently swallowed the log.
           git add log/observations.csv || true
+          [ -f log/REPORT.md ] && git add log/REPORT.md || true
           [ -f state.json ] && git add state.json || true
           if git diff --cached --quiet; then
             echo "No new observations to commit."

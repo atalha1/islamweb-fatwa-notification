@@ -39,7 +39,7 @@ import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -53,59 +53,16 @@ except ImportError:  # pragma: no cover - only hit when deps are missing
 # --------------------------------------------------------------------------
 
 # The contact URL in the User-Agent must resolve, so it names the repo as it
-# exists today. GitHub permanently redirects the old URL after a rename, so
-# this keeps working if the repo is renamed to islamweb-watcher.
+# exists today. GitHub permanently redirects the old URL after a rename.
 REPO_URL = "https://github.com/atalha1/islamweb-fatwa-notification"
-USER_AGENT = (
-    "islamweb-watcher/1.0 (notification-only availability checker; "
-    "read-only, never submits; +%s)" % REPO_URL
-)
-
-ISLAMWEB_HOST = "islamweb.net"
-FATWA_PAGE_PATH = "/ar/fatwa/" + quote("اسأل-عن-فتوى", safe="-")
-FATWA_PAGE_URL = "https://www.%s%s" % (ISLAMWEB_HOST, FATWA_PAGE_PATH)
-ROBOTS_URL = "https://www.%s/robots.txt" % ISLAMWEB_HOST
-
-# The page renders this apology block while submissions are closed.
-CLOSED_MARKER = "نعتذر عن استقبال الأسئلة"
-
-# Broader phrases that also mean "closed". The exact apology wording has not
-# been observed live yet (every check so far caught the window open), so these
-# are a deliberate safety net: a page that apologises or says the quota is full
-# reads as CLOSED even if the primary marker was reworded. Being wrong in this
-# direction costs a missed alert; being wrong the other way would fire a false
-# alert every hour.
-CLOSED_MARKER_FALLBACKS = (
-    "نعتذر",           # "we apologise"
-    "اكتمل العدد",     # "the quota is full"
-    "اكتمال العدد",
-    "لا نستقبل",       # "we are not accepting"
-)
-
-# A fatwa-question form posts to a path containing one of these hints.
-FORM_ACTION_HINTS = ("fatwa", "ask", "question", "سؤال", "اسأل")
-
-# The live form (observed 2026-09-15) carries no attributes at all - no
-# method, no action - so the action heuristic alone is weak. Its field names
-# are distinctive, though, and are the strongest signal the page gives us.
-QUESTION_FIELD_NAMES = ("question", "guestname", "hidden_vercode", "btsubmit")
-QUESTION_FIELDS_REQUIRED = 2
-
-MAKKAH_TZ = timezone(timedelta(hours=3))  # UTC+3, no DST, ever.
-
-POLL_INTERVAL_SECONDS = 20  # politeness floor; never lower this
-CONSECUTIVE_OPEN_REQUIRED = 2
-WINDOW_END_MINUTE = 12  # stop polling at :12 past the hour
-HTTP_TIMEOUT = 25
-MAX_RUN_SECONDS = 22 * 60  # hard stop, below the workflow timeout
-UNKNOWN_ALERT_COOLDOWN_HOURS = 24
-BODY_PREVIEW_CHARS = 300
+VERSION = "1.1"
 
 ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = Path(os.environ.get("WATCHER_CONFIG", ROOT / "config.yaml"))
 QUEUE_PATH = ROOT / "questions" / "queue.yaml"
 STATE_PATH = ROOT / "state.json"
 OBSERVATIONS_PATH = ROOT / "log" / "observations.csv"
-OBSERVATIONS_HEADER = ["timestamp_utc", "timestamp_makkah", "http_status", "state"]
+REPORT_PATH = ROOT / "log" / "REPORT.md"
 
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 TELEGRAM_API = "https://api.telegram.org/bot%s/sendMessage"
@@ -114,9 +71,145 @@ STATE_OPEN = "OPEN"
 STATE_CLOSED = "CLOSED"
 STATE_UNKNOWN = "UNKNOWN"
 
+HTTP_TIMEOUT = 25
+MAX_RUN_SECONDS = 22 * 60  # hard stop, below the workflow timeout
+POLL_INTERVAL_FLOOR = 20   # politeness floor; config cannot go below this
+
+
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+
+# Used when config.yaml is missing or a key is absent, so the tool always
+# runs. config.yaml is the place to change things, not this dict.
+DEFAULT_CONFIG = {
+    "site": {
+        "name": "Islamweb fatwa submission",
+        "url": "https://www.islamweb.net/ar/fatwa/اسأل-عن-فتوى",
+        "timezone_offset_hours": 3,
+        "timezone_label": "Makkah",
+    },
+    "detection": {
+        "closed_markers": ["نعتذر عن استقبال الأسئلة"],
+        "closed_fallback_markers": ["نعتذر", "اكتمل العدد", "اكتمال العدد", "لا نستقبل"],
+        "form_field_names": ["question", "guestname", "hidden_vercode", "btsubmit"],
+        "form_fields_required": 2,
+        "form_action_hints": ["fatwa", "ask", "question", "سؤال", "اسأل"],
+        "require_textarea": True,
+    },
+    "schedule": {
+        "active_hours": "0-23",
+        "poll_interval_seconds": 20,
+        "window_end_minute": 12,
+        "consecutive_open_required": 2,
+    },
+    "alerts": {
+        "body_preview_chars": 300,
+        "unknown_alert_cooldown_hours": 24,
+    },
+}
+
+
+def encode_url(url: str) -> str:
+    """Percent-encode a URL's path without double-encoding an encoded one."""
+    parts = urlsplit(url.strip())
+    return urlunsplit((parts.scheme, parts.netloc,
+                       quote(parts.path, safe="/-_.~%"), parts.query, parts.fragment))
+
+
+def parse_hour_spec(spec) -> frozenset:
+    """Parse "10-23" or "0-5,10,22-23" into a set of hours. Empty means all."""
+    if spec is None or str(spec).strip() in ("", "*", "all"):
+        return frozenset(range(24))
+    hours = set()
+    for chunk in str(spec).split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            low, _, high = chunk.partition("-")
+            try:
+                low, high = int(low), int(high)
+            except ValueError:
+                continue
+            if low <= high:
+                hours.update(range(low, high + 1))
+            else:  # a range that wraps midnight, e.g. "22-3"
+                hours.update(range(low, 24))
+                hours.update(range(0, high + 1))
+        else:
+            try:
+                hours.add(int(chunk))
+            except ValueError:
+                continue
+    return frozenset(h for h in hours if 0 <= h <= 23) or frozenset(range(24))
+
+
+def load_config(path: Path = None) -> dict:
+    """config.yaml layered over DEFAULT_CONFIG, one section at a time."""
+    merged = {section: dict(values) for section, values in DEFAULT_CONFIG.items()}
+    path = path or CONFIG_PATH
+    if yaml is not None and path.exists():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise SystemExit("config.yaml is not valid YAML: %s" % exc)
+        for section, values in loaded.items():
+            if isinstance(values, dict):
+                merged.setdefault(section, {}).update(values)
+    return merged
+
+
+CONFIG = load_config()
+
+SITE_NAME = CONFIG["site"]["name"]
+PAGE_URL = encode_url(CONFIG["site"]["url"])
+SITE_HOST = (urlsplit(PAGE_URL).hostname or "").lower()
+# The registrable-ish suffix, so the never-submit guard also covers
+# subdomains: www.islamweb.net -> islamweb.net.
+SITE_DOMAIN = ".".join(SITE_HOST.split(".")[-2:]) if SITE_HOST.count(".") >= 1 else SITE_HOST
+PAGE_PATH = urlsplit(PAGE_URL).path
+ROBOTS_URL = urlunsplit((urlsplit(PAGE_URL).scheme, urlsplit(PAGE_URL).netloc,
+                         "/robots.txt", "", ""))
+
+TZ_OFFSET_HOURS = int(CONFIG["site"]["timezone_offset_hours"])
+TZ_LABEL = CONFIG["site"]["timezone_label"]
+SITE_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
+
+# The page renders one of these while submissions are closed.
+CLOSED_MARKERS = tuple(CONFIG["detection"]["closed_markers"])
+CLOSED_MARKER = CLOSED_MARKERS[0] if CLOSED_MARKERS else ""
+
+# Broader phrases that also mean "closed". A deliberate safety net: a page
+# that apologises or says the quota is full reads as CLOSED even if the
+# primary marker was reworded. Being wrong in this direction costs a missed
+# alert; being wrong the other way would fire a false alert every hour.
+CLOSED_MARKER_FALLBACKS = tuple(CONFIG["detection"]["closed_fallback_markers"])
+
+FORM_ACTION_HINTS = tuple(CONFIG["detection"]["form_action_hints"])
+QUESTION_FIELD_NAMES = tuple(n.lower() for n in CONFIG["detection"]["form_field_names"])
+QUESTION_FIELDS_REQUIRED = int(CONFIG["detection"]["form_fields_required"])
+REQUIRE_TEXTAREA = bool(CONFIG["detection"]["require_textarea"])
+
+ACTIVE_HOURS = parse_hour_spec(CONFIG["schedule"]["active_hours"])
+POLL_INTERVAL_SECONDS = max(POLL_INTERVAL_FLOOR,
+                            int(CONFIG["schedule"]["poll_interval_seconds"]))
+WINDOW_END_MINUTE = int(CONFIG["schedule"]["window_end_minute"])
+CONSECUTIVE_OPEN_REQUIRED = int(CONFIG["schedule"]["consecutive_open_required"])
+
+BODY_PREVIEW_CHARS = int(CONFIG["alerts"]["body_preview_chars"])
+UNKNOWN_ALERT_COOLDOWN_HOURS = int(CONFIG["alerts"]["unknown_alert_cooldown_hours"])
+
+USER_AGENT = (
+    "islamweb-watcher/%s (notification-only availability checker; "
+    "read-only, never submits; +%s)" % (VERSION, REPO_URL)
+)
+
+OBSERVATIONS_HEADER = ["timestamp_utc", "timestamp_local", "http_status", "state"]
+
 
 class NeverSubmitError(RuntimeError):
-    """Raised if anything ever tries to write to islamweb.net."""
+    """Raised if anything ever tries to write to the watched site."""
 
 
 # --------------------------------------------------------------------------
@@ -159,11 +252,11 @@ class ReadOnlyIslamwebSession(requests.Session):
 
     def request(self, method, url, *args, **kwargs):  # type: ignore[override]
         host = (urlsplit(str(url)).hostname or "").lower()
-        if host == ISLAMWEB_HOST or host.endswith("." + ISLAMWEB_HOST):
+        if host == SITE_DOMAIN or host.endswith("." + SITE_DOMAIN):
             if str(method).upper() != "GET":
                 raise NeverSubmitError(
-                    "Refusing %s to %s. This tool is notification-only and must "
-                    "never submit the fatwa form." % (method, host)
+                    "Refusing %s to %s. This tool is notification-only and "
+                    "must never submit the form." % (method, host)
                 )
         return super().request(method, url, *args, **kwargs)
 
@@ -289,7 +382,7 @@ def check_robots(session: requests.Session) -> dict:
                           % (content_type or "no content-type"),
                 "crawl_delay": None, "text": response.text[:2000], "status": 200}
     robots_text = decode_response(response)
-    verdict = robots_verdict(robots_text, FATWA_PAGE_PATH)
+    verdict = robots_verdict(robots_text, PAGE_PATH)
     # Also report on the unencoded directory form, which is what a human reads.
     verdict["dir_verdict"] = robots_verdict(robots_text, "/ar/fatwa/")
     verdict["text"] = robots_text
@@ -346,7 +439,7 @@ def html_to_text(page_html: str) -> str:
     return html_mod.unescape(stripped)
 
 
-def find_question_form(page_html: str, page_url: str = FATWA_PAGE_URL):
+def find_question_form(page_html: str, page_url: str = PAGE_URL):
     """Return the resolved action URL of a fatwa-question form, or None.
 
     A match requires all three of:
@@ -363,7 +456,7 @@ def find_question_form(page_html: str, page_url: str = FATWA_PAGE_URL):
                              page_html, re.I | re.S):
         attrs = match.group("attrs")
         body = match.group("body")
-        if not re.search(r"<textarea\b", body, re.I):
+        if REQUIRE_TEXTAREA and not re.search(r"<textarea\b", body, re.I):
             continue
         method_match = re.search(r"method\s*=\s*['\"]?\s*(\w+)", attrs, re.I)
         method = (method_match.group(1) if method_match else "post").lower()
@@ -390,16 +483,17 @@ def find_question_form(page_html: str, page_url: str = FATWA_PAGE_URL):
     return None
 
 
-def classify(page_html: str, page_url: str = FATWA_PAGE_URL):
+def classify(page_html: str, page_url: str = PAGE_URL):
     """Return (state, detail). state is OPEN, CLOSED or UNKNOWN."""
     if not page_html or not page_html.strip():
         return STATE_UNKNOWN, "empty response body"
 
     text = normalize_arabic(html_to_text(page_html))
     raw = normalize_arabic(page_html)
-    marker = normalize_arabic(CLOSED_MARKER)
-    if marker in text or marker in raw:
-        return STATE_CLOSED, "closed marker present"
+    for marker in CLOSED_MARKERS:
+        folded = normalize_arabic(marker)
+        if folded and (folded in text or folded in raw):
+            return STATE_CLOSED, "closed marker present"
     for fallback in CLOSED_MARKER_FALLBACKS:
         folded = normalize_arabic(fallback)
         if folded in text or folded in raw:
@@ -625,16 +719,24 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def makkah_now(now: datetime = None) -> datetime:
-    return (now or utc_now()).astimezone(MAKKAH_TZ)
+def local_now(now: datetime = None) -> datetime:
+    """The given moment (default: now) in the watched site's timezone."""
+    return (now or utc_now()).astimezone(SITE_TZ)
+
+
+def local_stamp(now: datetime = None) -> str:
+    """ISO timestamp in the site's timezone, with its real offset."""
+    moment = local_now(now)
+    sign = "+" if TZ_OFFSET_HOURS >= 0 else "-"
+    return moment.strftime("%Y-%m-%dT%H:%M:%S") + "%s%02d:00" % (sign, abs(TZ_OFFSET_HOURS))
 
 
 def compose_open_message(entry, now: datetime = None) -> str:
     now = now or utc_now()
     lines = [
         "🟢 Islamweb fatwa form is OPEN",
-        "Makkah time: %s" % makkah_now(now).strftime("%Y-%m-%d %H:%M"),
-        FATWA_PAGE_URL,
+        "%s time: %s" % (TZ_LABEL, local_now(now).strftime("%Y-%m-%d %H:%M")),
+        PAGE_URL,
         "",
     ]
     if entry is None:
@@ -660,11 +762,11 @@ def compose_unknown_message(detail: str, now: datetime = None) -> str:
     now = now or utc_now()
     return "\n".join([
         "⚠️ Islamweb watcher: page structure changed",
-        "Makkah time: %s" % makkah_now(now).strftime("%Y-%m-%d %H:%M"),
+        "%s time: %s" % (TZ_LABEL, local_now(now).strftime("%Y-%m-%d %H:%M")),
         "The page matched neither the CLOSED marker nor a question form.",
         "Reason: %s" % detail,
         "A human needs to look at the markup and update the detection rules.",
-        FATWA_PAGE_URL,
+        PAGE_URL,
     ])
 
 
@@ -683,7 +785,7 @@ def record_observation(http_status: int, state_name: str, now: datetime = None) 
             writer.writerow(OBSERVATIONS_HEADER)
         writer.writerow([
             now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            makkah_now(now).strftime("%Y-%m-%dT%H:%M:%S+03:00"),
+            local_stamp(now),
             http_status,
             state_name,
         ])
@@ -697,12 +799,12 @@ def record_observation(http_status: int, state_name: str, now: datetime = None) 
 def poll_once(session: requests.Session):
     """One GET. Returns (http_status, state, detail). Never raises."""
     try:
-        response = session.get(FATWA_PAGE_URL, timeout=HTTP_TIMEOUT)
+        response = session.get(PAGE_URL, timeout=HTTP_TIMEOUT)
     except requests.RequestException as exc:
         return 0, STATE_UNKNOWN, "request failed: %s" % exc
     if response.status_code != 200:
         return response.status_code, STATE_UNKNOWN, "HTTP %d" % response.status_code
-    state_name, detail = classify(decode_response(response), FATWA_PAGE_URL)
+    state_name, detail = classify(decode_response(response), PAGE_URL)
     return 200, state_name, detail
 
 
@@ -712,6 +814,29 @@ def window_deadline(now: datetime) -> datetime:
     if now.minute >= 40:  # started before the top of the next hour
         top_of_hour += timedelta(hours=1)
     return top_of_hour + timedelta(minutes=WINDOW_END_MINUTE)
+
+
+def target_hour_local(now: datetime) -> int:
+    """Which local hour's opening this run is waiting for."""
+    return local_now(window_deadline(now)).hour
+
+
+def is_active_hour(now: datetime) -> bool:
+    """Is this run's target hour one we were told to watch?"""
+    return target_hour_local(now) in ACTIVE_HOURS
+
+
+def describe_active_hours() -> str:
+    hours = sorted(ACTIVE_HOURS)
+    if len(hours) == 24:
+        return "every hour"
+    runs, start = [], hours[0]
+    for previous, current in zip(hours, hours[1:] + [None]):
+        if current != previous + 1:
+            runs.append((start, previous))
+            start = current
+    return ", ".join("%02d:00" % a if a == b else "%02d:00-%02d:00" % (a, b)
+                     for a, b in runs) + " %s" % TZ_LABEL
 
 
 def maybe_alert_unknown(state: dict, detail: str, now: datetime) -> None:
@@ -735,13 +860,24 @@ def maybe_alert_unknown(state: dict, detail: str, now: datetime) -> None:
 def run_watch(interval: int = POLL_INTERVAL_SECONDS) -> int:
     """The polling run. Returns a process exit code."""
     state = load_state()
+
+    # --- active-hours gate: FIRST, before any network call at all. Outside
+    # the configured hours this run must cost the site nothing, not even a
+    # robots.txt fetch.
+    started = utc_now()
+    if not is_active_hour(started):
+        log("target hour %02d:00 %s is outside the active window (%s) - nothing to do"
+            % (target_hour_local(started), TZ_LABEL, describe_active_hours()))
+        save_state(state)
+        return 0
+
     session = make_session()
 
     # --- robots.txt gate: re-checked on every run, not just once at design time.
     robots = check_robots(session)
     if robots["allowed"] is False:
         log("robots.txt DISALLOWS %s (%s). Polling is skipped." %
-            (FATWA_PAGE_PATH, robots["reason"]))
+            (PAGE_PATH, robots["reason"]))
         log("Switch the workflow to degraded mode (see README).")
         save_state(state)
         return 0
@@ -758,7 +894,6 @@ def run_watch(interval: int = POLL_INTERVAL_SECONDS) -> int:
 
     retry_pending_notification(state)
 
-    started = utc_now()
     deadline = window_deadline(started)
     hard_stop = started + timedelta(seconds=MAX_RUN_SECONDS)
     log("run started %s | window closes %s | interval %ds"
@@ -830,9 +965,9 @@ def run_reminder() -> int:
     preview = body[:BODY_PREVIEW_CHARS] + ("…" if len(body) > BODY_PREVIEW_CHARS else "")
     message = "\n".join([
         "⏰ Islamweb fatwa reminder (degraded mode - no scraping)",
-        "Makkah time: %s" % makkah_now(now).strftime("%Y-%m-%d %H:%M"),
+        "%s time: %s" % (TZ_LABEL, local_now(now).strftime("%Y-%m-%d %H:%M")),
         "Submissions open at the top of the hour, Makkah time.",
-        FATWA_PAGE_URL,
+        PAGE_URL,
         "",
         "id: %s" % entry.get("id"),
         "title: %s" % entry.get("title"),
@@ -859,7 +994,7 @@ def cmd_once() -> int:
     now = utc_now()
     record_observation(http_status, state_name, now)
     print("utc     : %s" % now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    print("makkah  : %s" % makkah_now(now).strftime("%Y-%m-%dT%H:%M:%S+03:00"))
+    print("%-8s: %s" % (TZ_LABEL.lower()[:8], local_stamp(now)))
     print("http    : %s" % http_status)
     print("state   : %s" % state_name)
     print("detail  : %s" % detail)
@@ -872,7 +1007,7 @@ def cmd_check_robots() -> int:
     verdict = check_robots(session)
     print("robots.txt : %s" % ROBOTS_URL)
     print("http       : %s" % verdict.get("status"))
-    print("page path  : %s" % FATWA_PAGE_PATH)
+    print("page path  : %s" % PAGE_PATH)
     print("allowed    : %s" % verdict["allowed"])
     print("reason     : %s" % verdict["reason"])
     print("crawl-delay: %s" % verdict.get("crawl_delay"))
@@ -891,11 +1026,33 @@ def cmd_check_robots() -> int:
     return 0
 
 
+def cmd_show_config() -> int:
+    """Print what the tool actually resolved from config.yaml."""
+    print("config file    : %s (%s)"
+          % (CONFIG_PATH, "loaded" if CONFIG_PATH.exists() else "missing, using defaults"))
+    print("site           : %s" % SITE_NAME)
+    print("page url       : %s" % PAGE_URL)
+    print("robots url     : %s" % ROBOTS_URL)
+    print("guarded domain : %s (no non-GET request may reach it)" % SITE_DOMAIN)
+    print("timezone       : %s (UTC%+d)" % (TZ_LABEL, TZ_OFFSET_HOURS))
+    print("active hours   : %s" % describe_active_hours())
+    print("poll interval  : %ds" % POLL_INTERVAL_SECONDS)
+    print("window ends    : :%02d past the hour" % WINDOW_END_MINUTE)
+    print("open needs     : %d consecutive OPEN polls" % CONSECUTIVE_OPEN_REQUIRED)
+    print("closed markers : %s" % ", ".join(CLOSED_MARKERS))
+    print("closed fallback: %s" % ", ".join(CLOSED_MARKER_FALLBACKS))
+    print("form fields    : %s (need %d of them)"
+          % (", ".join(QUESTION_FIELD_NAMES), QUESTION_FIELDS_REQUIRED))
+    print("action hints   : %s" % ", ".join(FORM_ACTION_HINTS))
+    print("queue          : %d entries" % len(load_queue()))
+    return 0
+
+
 def cmd_dump() -> int:
     """Print the page's structure so a human can re-tune detection. Read-only."""
     session = make_session()
     try:
-        response = session.get(FATWA_PAGE_URL, timeout=HTTP_TIMEOUT)
+        response = session.get(PAGE_URL, timeout=HTTP_TIMEOUT)
     except requests.RequestException as exc:
         print("fetch failed: %s" % exc)
         return 1
@@ -928,8 +1085,124 @@ def cmd_dump() -> int:
     print("\n----- visible text, first 1200 chars -----")
     print(normalized[:1200])
     print("----- end -----")
-    state_name, detail = classify(page, FATWA_PAGE_URL)
+    state_name, detail = classify(page, PAGE_URL)
     print("\nclassified as  : %s (%s)" % (state_name, detail))
+    return 0
+
+
+def read_observations(path: Path = None):
+    """Every logged poll as a dict. Bad rows are skipped, never fatal."""
+    path = path or OBSERVATIONS_PATH
+    if not path.exists():
+        return []
+    rows = []
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            stamp = (row.get("timestamp_local") or row.get("timestamp_makkah") or "").strip()
+            state_name = (row.get("state") or "").strip().upper()
+            if len(stamp) < 16 or state_name not in (STATE_OPEN, STATE_CLOSED, STATE_UNKNOWN):
+                continue
+            try:
+                hour, minute = int(stamp[11:13]), int(stamp[14:16])
+                second = int(stamp[17:19]) if len(stamp) >= 19 and stamp[16] == ":" else 0
+            except ValueError:
+                continue
+            rows.append({"utc": (row.get("timestamp_utc") or "").strip(),
+                         "local": stamp, "date": stamp[:10], "hour": hour,
+                         "minute": minute, "second": second,
+                         # Seconds past the top of the hour - polls are 20s
+                         # apart, so minute resolution alone would collapse a
+                         # three-poll window into "0 minutes".
+                         "offset": minute * 60 + second,
+                         "state": state_name,
+                         "status": (row.get("http_status") or "").strip()})
+    return rows
+
+
+def build_report(rows) -> str:
+    """Turn the observation log into the answer the log exists to give."""
+    lines = ["# Observation report", ""]
+    if not rows:
+        lines += ["No observations logged yet. The report fills in as the",
+                  "watcher runs - give it a few days."]
+        return "\n".join(lines) + "\n"
+
+    dates = sorted({row["date"] for row in rows})
+    lines += [
+        "Watching **%s** (%s)." % (SITE_NAME, PAGE_URL),
+        "",
+        "- Polls logged: **%d**" % len(rows),
+        "- Days covered: **%d** (%s to %s)" % (len(dates), dates[0], dates[-1]),
+        "- Active hours: %s" % describe_active_hours(),
+        "",
+        "## Open rate by hour (%s time)" % TZ_LABEL,
+        "",
+        "| Hour | Polls | OPEN | CLOSED | UNKNOWN | % open |",
+        "|-----:|------:|-----:|-------:|--------:|-------:|",
+    ]
+    by_hour = {}
+    for row in rows:
+        bucket = by_hour.setdefault(row["hour"], {STATE_OPEN: 0, STATE_CLOSED: 0,
+                                                  STATE_UNKNOWN: 0})
+        bucket[row["state"]] += 1
+    for hour in sorted(by_hour):
+        counts = by_hour[hour]
+        total = sum(counts.values())
+        share = 100.0 * counts[STATE_OPEN] / total if total else 0.0
+        lines.append("| %02d:00 | %d | %d | %d | %d | %.0f%% |"
+                     % (hour, total, counts[STATE_OPEN], counts[STATE_CLOSED],
+                        counts[STATE_UNKNOWN], share))
+
+    # How long does a window stay open? Count consecutive OPEN polls per
+    # (date, hour), which at a fixed interval is a duration.
+    windows = {}
+    for row in rows:
+        if row["state"] == STATE_OPEN:
+            key = (row["date"], row["hour"])
+            windows.setdefault(key, []).append(row["offset"])
+    lines += ["", "## Windows seen open", ""]
+    if not windows:
+        lines.append("No OPEN poll recorded yet.")
+    else:
+        lines += ["| Date | Hour | First seen | Last seen | Polls open | ~Duration |",
+                  "|------|-----:|-----------:|----------:|-----------:|----------:|"]
+        for (date, hour), offsets in sorted(windows.items()):
+            first, last = min(offsets), max(offsets)
+            # The window was open for at least the span between the first and
+            # last OPEN poll, plus one interval - it was still open when we
+            # last looked, and closed some time before the next poll.
+            span = (last - first) + POLL_INTERVAL_SECONDS
+            lines.append("| %s | %02d:00 | +%dm%02ds | +%dm%02ds | %d | ~%dm%02ds |"
+                         % (date, hour, first // 60, first % 60, last // 60, last % 60,
+                            len(offsets), span // 60, span % 60))
+        open_hours = sorted({hour for _, hour in windows})
+        lines += ["", "**Hours ever seen open:** %s"
+                  % ", ".join("%02d:00" % h for h in open_hours)]
+        never = sorted(set(by_hour) - set(open_hours))
+        if never:
+            lines.append("**Hours polled but never seen open:** %s"
+                         % ", ".join("%02d:00" % h for h in never))
+
+    unknown = [row for row in rows if row["state"] == STATE_UNKNOWN]
+    if unknown:
+        lines += ["", "## UNKNOWN readings", "",
+                  "%d of %d polls could not be classified. A run of these means the "
+                  "page markup changed - run `python watch.py --dump` and update "
+                  "`config.yaml`." % (len(unknown), len(rows))]
+
+    lines += ["", "---", "",
+              "_Generated by `python watch.py --report`. "
+              "Source data: `log/observations.csv`._"]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_report(write: bool = False) -> int:
+    report = build_report(read_observations())
+    print(report)
+    if write:
+        REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        REPORT_PATH.write_text(report, encoding="utf-8")
+        print("Written to %s" % REPORT_PATH.relative_to(ROOT))
     return 0
 
 
@@ -938,7 +1211,7 @@ def cmd_test_alert() -> int:
     now = utc_now()
     message = "\n".join([
         "✅ Islamweb watcher test alert",
-        "Makkah time: %s" % makkah_now(now).strftime("%Y-%m-%d %H:%M"),
+        "%s time: %s" % (TZ_LABEL, local_now(now).strftime("%Y-%m-%d %H:%M")),
         "If you can read this, alerts work. No page was scraped, "
         "nothing was submitted.",
     ])
@@ -993,11 +1266,17 @@ def main(argv=None) -> int:
                        help="print the robots.txt verdict for the fatwa page")
     group.add_argument("--dump", action="store_true",
                        help="print the page structure for re-tuning detection")
+    group.add_argument("--report", action="store_true",
+                       help="summarise log/observations.csv: when does it open?")
+    group.add_argument("--show-config", action="store_true",
+                       help="print the effective configuration and exit")
     group.add_argument("--remind", action="store_true",
                        help="degraded mode: send the next queued question, no scraping")
     group.add_argument("--mark-sent", metavar="ID", help="mark a queue entry as sent")
     group.add_argument("--mark-answered", metavar="ID", help="mark a queue entry as answered")
     parser.add_argument("--fatwa-url", help="fatwa URL to record with --mark-answered")
+    parser.add_argument("--write", action="store_true",
+                        help="with --report, also write log/REPORT.md")
     parser.add_argument("--interval", type=int, default=POLL_INTERVAL_SECONDS,
                         help="seconds between polls (minimum %d)" % POLL_INTERVAL_SECONDS)
     args = parser.parse_args(argv)
@@ -1012,6 +1291,10 @@ def main(argv=None) -> int:
         return cmd_check_robots()
     if args.dump:
         return cmd_dump()
+    if args.report:
+        return cmd_report(write=args.write)
+    if args.show_config:
+        return cmd_show_config()
     if args.remind:
         return run_reminder()
     if args.mark_sent:

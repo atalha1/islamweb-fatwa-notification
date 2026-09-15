@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Everything tunable lives here. Nothing in watch.py needs editing to point
+# this tool at a different site, a different phrase, or a different schedule.
+#
+# The shipped values watch the Islamweb fatwa submission form. See
+# "Watching a different site" in the README for a worked example of changing
+# them.
+# ---------------------------------------------------------------------------
+
+site:
+  # Shown in alerts and reports.
+  name: Islamweb fatwa submission
+  # The page to poll. GET only, always.
+  url: https://www.islamweb.net/ar/fatwa/اسأل-عن-فتوى
+  # The site's own timezone, as a fixed UTC offset. Makkah is UTC+3 and has
+  # never observed DST. A site in a DST-observing zone needs the offset that
+  # is in effect during the hours you care about.
+  timezone_offset_hours: 3
+  timezone_label: Makkah
+
+detection:
+  # If ANY of these appear, the window is CLOSED. This is the authoritative
+  # signal - a page that says "we are not accepting" is closed no matter what
+  # else it renders.
+  closed_markers:
+    - نعتذر عن استقبال الأسئلة
+
+  # Broader phrases that also mean closed. These exist so that a reworded
+  # apology still reads as CLOSED rather than flipping to OPEN. Erring this
+  # way costs a missed alert; erring the other way pages you every hour.
+  closed_fallback_markers:
+    - نعتذر
+    - اكتمل العدد
+    - اكتمال العدد
+    - لا نستقبل
+
+  # A form counts as the submission form when it has a textarea AND either
+  # `form_fields_required` of these field names, or an action matching one of
+  # the hints below. Field names are the stronger signal: the live Islamweb
+  # form carries no method and no action at all.
+  form_field_names: [question, guestname, hidden_vercode, btsubmit]
+  form_fields_required: 2
+  form_action_hints: [fatwa, ask, question, سؤال, اسأل]
+  require_textarea: true
+
+schedule:
+  # Hours (in the site's timezone, 0-23) whose opening is worth watching.
+  # Comma-separated; ranges are inclusive. "10-23" means the tool watches for
+  # the 10:00 through 23:00 openings and stays asleep overnight.
+  # The cron in .github/workflows/watch.yml should match, but THIS is what
+  # actually enforces it - a run fired outside these hours exits immediately.
+  active_hours: "10-23"
+
+  # Politeness floor. The code refuses to go below 20 seconds.
+  poll_interval_seconds: 20
+  # Stop polling this many minutes past the top of the hour.
+  window_end_minute: 12
+  # Consecutive OPEN readings required before an alert fires.
+  consecutive_open_required: 2
+
+alerts:
+  # Characters of the question body to include in the message.
+  body_preview_chars: 300
+  # At most one "the page structure changed" alert per this many hours.
+  unknown_alert_cooldown_hours: 24
