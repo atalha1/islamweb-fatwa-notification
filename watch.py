@@ -454,7 +454,28 @@ def load_queue(path: Path = QUEUE_PATH) -> list:
     return data
 
 
+def _leading_comment_block(path: Path) -> str:
+    """The comment header at the top of the queue file.
+
+    yaml.safe_dump cannot round-trip comments, so the header is captured and
+    re-emitted verbatim. Without this, the first --mark-sent would silently
+    delete the usage notes at the top of questions/queue.yaml.
+    """
+    if not path.exists():
+        return ""
+    kept = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or not line.strip():
+            kept.append(line)
+        else:
+            break
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return ("\n".join(kept) + "\n\n") if kept else ""
+
+
 def save_queue(entries: list, path: Path = QUEUE_PATH) -> None:
+    header = _leading_comment_block(path)
     ordered = []
     for entry in entries:
         item = {key: entry.get(key) for key in QUEUE_FIELD_ORDER if key in entry}
@@ -464,7 +485,7 @@ def save_queue(entries: list, path: Path = QUEUE_PATH) -> None:
         ordered.append(item)
     dumped = yaml.safe_dump(ordered, allow_unicode=True, sort_keys=False,
                             default_flow_style=False, width=100)
-    path.write_text(dumped, encoding="utf-8")
+    path.write_text(header + dumped, encoding="utf-8")
 
 
 def select_next_question(entries: list):
