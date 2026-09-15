@@ -1355,6 +1355,32 @@ def cmd_check_robots() -> int:
     return 0
 
 
+def cmd_check_ref(reference: str) -> int:
+    """Classify one reference without touching the queue or sending anything.
+
+    Use it to confirm a question number resolves before trusting it:
+        python watch.py --check-ref 447769
+    """
+    url = tracking_url(reference)
+    print("reference : %s" % reference)
+    print("url       : %s" % url)
+    session = make_session()
+    try:
+        response = session.get(url, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as exc:
+        print("result    : fetch failed (%s)" % exc)
+        return 1
+    print("http      : %d" % response.status_code)
+    if response.status_code != 200:
+        print("result    : not a 200, cannot classify")
+        return 1
+    result, detail = classify_answer_page(decode_response(response))
+    print("result    : %s" % result)
+    print("detail    : %s" % detail)
+    print("(--check-ref never notifies and never edits the queue)")
+    return 0 if result != TRACK_UNKNOWN else 2
+
+
 def cmd_show_config() -> int:
     """Print what the tool actually resolved from config.yaml."""
     print("config file    : %s (%s)"
@@ -1672,6 +1698,8 @@ def main(argv=None) -> int:
                        help="start polling the submission page again")
     group.add_argument("--status", action="store_true",
                        help="print what the watcher is currently doing")
+    group.add_argument("--check-ref", metavar="REF",
+                       help="classify one question number or link, send nothing")
     group.add_argument("--track", metavar="ID",
                        help="attach a question number or link to a sent entry "
                             "(use with --ref)")
@@ -1725,6 +1753,8 @@ def main(argv=None) -> int:
     if args.status:
         print(compose_status(load_state()))
         return 0
+    if args.check_ref:
+        return cmd_check_ref(args.check_ref)
     if args.track:
         if not args.ref:
             parser.error("--track needs --ref <question number or link>")

@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'With mode=dump, probe this URL instead of the configured page'
+        description: 'With mode=dump, a URL to probe. With mode=check-ref, a fatwa number or link.'
         required: false
         type: string
       mode:
@@ -31,7 +31,7 @@ on:
         default: 'run'
         type: choice
         options: [run, once, check-robots, test-alert, dump, report, show-config,
-                  status, pause, resume, check-answers, commands]
+                  status, pause, resume, check-answers, commands, check-ref]
 
 permissions:
   contents: write
@@ -82,6 +82,7 @@ jobs:
             resume)       python watch.py --resume ;;
             check-answers) python watch.py --check-answers --force ;;
             commands)     python watch.py --commands ;;
+            check-ref)    python watch.py --check-ref "${{ inputs.url }}" ;;
             *)            python watch.py --run ;;
           esac
 
