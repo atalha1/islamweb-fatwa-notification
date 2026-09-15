@@ -103,6 +103,13 @@ DEFAULT_CONFIG = {
         "window_end_minute": 12,
         "consecutive_open_required": 2,
     },
+    "tracking": {
+        "enabled": True,
+        "url_template": "https://www.islamweb.net/ar/fatwa/{id}/",
+        "not_published_markers": ["لا يوجد فتوي بهذا الرقم", "لا توجد فتوى بهذا الرقم"],
+        "published_markers": ["تم نسخ الرابط", "السؤال"],
+        "check_interval_hours": 6,
+    },
     "alerts": {
         "body_preview_chars": 300,
         "unknown_alert_cooldown_hours": 24,
@@ -196,6 +203,12 @@ POLL_INTERVAL_SECONDS = max(POLL_INTERVAL_FLOOR,
                             int(CONFIG["schedule"]["poll_interval_seconds"]))
 WINDOW_END_MINUTE = int(CONFIG["schedule"]["window_end_minute"])
 CONSECUTIVE_OPEN_REQUIRED = int(CONFIG["schedule"]["consecutive_open_required"])
+
+TRACKING_ENABLED = bool(CONFIG["tracking"]["enabled"])
+TRACK_URL_TEMPLATE = CONFIG["tracking"]["url_template"]
+NOT_PUBLISHED_MARKERS = tuple(CONFIG["tracking"]["not_published_markers"])
+PUBLISHED_MARKERS = tuple(CONFIG["tracking"]["published_markers"])
+TRACK_INTERVAL_HOURS = int(CONFIG["tracking"]["check_interval_hours"])
 
 BODY_PREVIEW_CHARS = int(CONFIG["alerts"]["body_preview_chars"])
 UNKNOWN_ALERT_COOLDOWN_HOURS = int(CONFIG["alerts"]["unknown_alert_cooldown_hours"])
@@ -511,6 +524,11 @@ def classify(page_html: str, page_url: str = PAGE_URL):
 # --------------------------------------------------------------------------
 
 DEFAULT_STATE = {
+    "paused": False,
+    "paused_reason": None,
+    "paused_at_utc": None,
+    "telegram_update_offset": 0,
+    "last_answer_check_utc": None,
     "last_unknown_alert_utc": None,
     "last_alert_utc": None,
     "last_alert_question_id": None,
@@ -537,7 +555,8 @@ def save_state(state: dict) -> None:
 # Queue
 # --------------------------------------------------------------------------
 
-QUEUE_FIELD_ORDER = ["id", "priority", "status", "lang", "title", "body", "sent_at", "fatwa_url"]
+QUEUE_FIELD_ORDER = ["id", "priority", "status", "lang", "title", "body",
+                     "sent_at", "fatwa_ref", "fatwa_url", "answered_at"]
 
 
 def load_queue(path: Path = QUEUE_PATH) -> list:
@@ -599,6 +618,158 @@ def select_next_question(entries: list):
         return (priority, str(entry.get("id", "")))
 
     return sorted(queued, key=sort_key)[0]
+
+
+# --------------------------------------------------------------------------
+# Pause / resume
+# --------------------------------------------------------------------------
+
+PAUSE_SUBMITTED = "submitted"   # set automatically by --mark-sent
+PAUSE_MANUAL = "manual"         # set by --pause or a /pause message
+
+
+def is_paused(state: dict) -> bool:
+    return bool(state.get("paused"))
+
+
+def set_paused(state: dict, paused: bool, reason: str = None) -> str:
+    """Flip the pause flag and return a one-line human summary."""
+    state["paused"] = bool(paused)
+    state["paused_reason"] = reason if paused else None
+    state["paused_at_utc"] = utc_now().isoformat() if paused else None
+    if paused:
+        return "Paused (%s). The submission page will not be polled." % (reason or "manual")
+    return "Resumed. The submission page will be polled during %s." % describe_active_hours()
+
+
+# --------------------------------------------------------------------------
+# Answer tracking
+# --------------------------------------------------------------------------
+
+TRACK_PUBLISHED = "PUBLISHED"
+TRACK_NOT_PUBLISHED = "NOT_PUBLISHED"
+TRACK_UNKNOWN = "UNKNOWN"
+
+
+def tracking_url(reference: str) -> str:
+    """A pasted link is used as-is; a bare number goes through the template."""
+    reference = str(reference).strip()
+    if reference.lower().startswith(("http://", "https://")):
+        return encode_url(reference)
+    digits = re.sub(r"\D", "", reference)
+    return encode_url(TRACK_URL_TEMPLATE.format(id=digits or reference))
+
+
+def classify_answer_page(page_html: str):
+    """Has this fatwa been published yet? Returns (state, detail).
+
+    Ordered so that "not published" wins: Islamweb's not-found page still
+    carries the site chrome, and mistaking it for an answer would fire a
+    false "your question was answered" alert.
+    """
+    if not page_html or not page_html.strip():
+        return TRACK_UNKNOWN, "empty response body"
+    text = normalize_arabic(html_to_text(page_html))
+    for marker in NOT_PUBLISHED_MARKERS:
+        folded = normalize_arabic(marker)
+        if folded and folded in text:
+            return TRACK_NOT_PUBLISHED, "not-published marker present"
+    for marker in PUBLISHED_MARKERS:
+        folded = normalize_arabic(marker)
+        if folded and folded in text:
+            return TRACK_PUBLISHED, "published marker present: %s" % marker
+    if not PUBLISHED_MARKERS:
+        # With no positive markers configured, the absence of the
+        # not-published phrase on a 200 response is the whole signal.
+        return TRACK_PUBLISHED, "no not-published marker on a 200 response"
+    return TRACK_UNKNOWN, "neither a published nor a not-published marker found"
+
+
+def tracked_entries(entries: list) -> list:
+    """Sent questions that carry a reference and are not answered yet."""
+    out = []
+    for entry in entries:
+        if str(entry.get("status", "")).lower() != "sent":
+            continue
+        if entry.get("fatwa_ref") or entry.get("fatwa_url"):
+            out.append(entry)
+    return out
+
+
+def compose_answered_message(entry, url: str, now: datetime = None) -> str:
+    now = now or utc_now()
+    return "\n".join([
+        "📬 Your question has been answered",
+        "%s time: %s" % (TZ_LABEL, local_now(now).strftime("%Y-%m-%d %H:%M")),
+        "",
+        "id: %s" % entry.get("id"),
+        "title: %s" % entry.get("title"),
+        "",
+        url,
+        "",
+        "Marked as answered in the queue.",
+    ])
+
+
+def check_answers(state: dict, force: bool = False) -> int:
+    """Poll every tracked question once. Returns how many were newly answered."""
+    if not TRACKING_ENABLED:
+        log("tracking is disabled in config.yaml")
+        return 0
+
+    entries = load_queue()
+    tracked = tracked_entries(entries)
+    if not tracked:
+        log("nothing to track: no sent question carries a fatwa_ref or fatwa_url")
+        return 0
+
+    if not force:
+        last = state.get("last_answer_check_utc")
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(last)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                due = last_dt + timedelta(hours=TRACK_INTERVAL_HOURS)
+                if utc_now() < due:
+                    log("answer check not due until %s" % due.strftime("%Y-%m-%d %H:%MZ"))
+                    return 0
+            except ValueError:
+                pass
+
+    session = make_session()
+    state["last_answer_check_utc"] = utc_now().isoformat()
+    newly_answered = 0
+
+    for entry in tracked:
+        reference = entry.get("fatwa_url") or entry.get("fatwa_ref")
+        url = tracking_url(reference)
+        try:
+            response = session.get(url, timeout=HTTP_TIMEOUT)
+        except requests.RequestException as exc:
+            log("%s: request failed (%s)" % (entry.get("id"), exc))
+            continue
+        if response.status_code != 200:
+            log("%s: HTTP %d for %s" % (entry.get("id"), response.status_code, url))
+            continue
+
+        result, detail = classify_answer_page(decode_response(response))
+        log("%s: %s (%s) %s" % (entry.get("id"), result, detail, url))
+
+        if result != TRACK_PUBLISHED:
+            continue
+
+        entry["status"] = "answered"
+        entry["answered_at"] = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry["fatwa_url"] = url
+        newly_answered += 1
+        notify(compose_answered_message(entry, url), state)
+        time.sleep(2)  # be gentle between lookups
+
+    if newly_answered:
+        save_queue(entries)
+        log("%d question(s) answered" % newly_answered)
+    return newly_answered
 
 
 # --------------------------------------------------------------------------
@@ -708,6 +879,149 @@ def retry_pending_notification(state: dict) -> None:
     if not wa_ok:
         tg_ok, tg_detail = send_telegram(pending["text"])
         log("retry telegram: %s" % tg_detail)
+
+
+# --------------------------------------------------------------------------
+# Telegram command interface
+# --------------------------------------------------------------------------
+#
+# CallMeBot's WhatsApp bridge is send-only: there is no way to message it
+# back. Telegram is therefore the control channel. Each run reads any new
+# messages addressed to the bot and acts on them, so a /pause sent from a
+# phone takes effect on the next run.
+
+TELEGRAM_GETUPDATES = "https://api.telegram.org/bot%s/getUpdates"
+
+COMMAND_HELP = """Commands:
+/pause - stop checking the submission page
+/resume - start checking it again
+/status - what the watcher is doing right now
+/sent <id> [ref] - mark a question submitted (pauses), optionally with its
+    Islamweb question number or link so the answer can be tracked
+/track <id> <ref> - attach a number or link to an already-sent question
+/check - check tracked questions for answers right now
+/next - show the question that would be sent next
+/help - this message"""
+
+
+def fetch_telegram_commands(state: dict):
+    """New messages sent to the bot, oldest first. Never raises."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return []
+    offset = int(state.get("telegram_update_offset") or 0)
+    try:
+        response = requests.get(
+            TELEGRAM_GETUPDATES % token,
+            params={"offset": offset, "timeout": 0, "allowed_updates": '["message"]'},
+            timeout=HTTP_TIMEOUT,
+            headers={"User-Agent": USER_AGENT},
+        )
+    except requests.RequestException as exc:
+        log("could not read telegram commands: %s" % exc)
+        return []
+    if response.status_code != 200:
+        log("telegram getUpdates HTTP %d" % response.status_code)
+        return []
+    try:
+        payload = response.json()
+    except ValueError:
+        log("telegram getUpdates returned a non-JSON body")
+        return []
+    if not payload.get("ok"):
+        log("telegram getUpdates returned ok=false")
+        return []
+
+    messages = []
+    highest = offset
+    for update in payload.get("result", []):
+        highest = max(highest, int(update.get("update_id", 0)) + 1)
+        message = update.get("message") or {}
+        text = (message.get("text") or "").strip()
+        sender_chat = str((message.get("chat") or {}).get("id", ""))
+        # Only obey the configured chat. Anyone else who finds the bot is
+        # ignored - they must not be able to pause someone else's watcher.
+        if not text or sender_chat != str(chat_id):
+            continue
+        messages.append(text)
+    state["telegram_update_offset"] = highest
+    return messages
+
+
+def compose_status(state: dict) -> str:
+    entries = load_queue()
+    queued = [e for e in entries if str(e.get("status", "")).lower() == "queued"]
+    tracked = tracked_entries(entries)
+    lines = [
+        "📋 %s watcher" % SITE_NAME,
+        "",
+        "Polling: %s" % ("PAUSED (%s)" % (state.get("paused_reason") or "manual")
+                         if is_paused(state) else "active"),
+        "Active hours: %s" % describe_active_hours(),
+        "Queued questions: %d" % len(queued),
+        "Awaiting an answer: %d" % len(tracked),
+    ]
+    nxt = select_next_question(entries)
+    if nxt:
+        lines.append("Next up: %s - %s" % (nxt.get("id"), nxt.get("title")))
+    if is_paused(state):
+        lines += ["", "Send /resume to start checking the submission page again."]
+    return "\n".join(lines)
+
+
+def handle_command(text: str, state: dict) -> str:
+    """Run one command and return the reply to send back. Never raises."""
+    parts = text.strip().split()
+    if not parts:
+        return ""
+    command = parts[0].lower().lstrip("/")
+    command = command.split("@", 1)[0]  # /pause@mybot
+    args = parts[1:]
+
+    if command in ("pause", "stop"):
+        return set_paused(state, True, PAUSE_MANUAL)
+    if command in ("resume", "start", "go"):
+        return set_paused(state, False)
+    if command == "status":
+        return compose_status(state)
+    if command in ("help", "commands"):
+        return COMMAND_HELP
+    if command == "next":
+        nxt = select_next_question(load_queue())
+        if not nxt:
+            return "Nothing queued. Add a question to questions/queue.yaml."
+        return compose_open_message(nxt)
+    if command == "check":
+        found = check_answers(state, force=True)
+        return "Checked tracked questions. %d newly answered." % found
+    if command in ("sent", "submitted"):
+        if not args:
+            return "Usage: /sent <id> [question number or link]"
+        return mark_sent(args[0], args[1] if len(args) > 1 else None, state)[1]
+    if command == "track":
+        if len(args) < 2:
+            return "Usage: /track <id> <question number or link>"
+        return attach_reference(args[0], args[1])[1]
+    return "Unknown command %r.\n\n%s" % (text.strip()[:40], COMMAND_HELP)
+
+
+def process_commands(state: dict) -> int:
+    """Read and run every pending command. Returns how many ran."""
+    messages = fetch_telegram_commands(state)
+    if not messages:
+        return 0
+    for text in messages:
+        log("command received: %s" % text.split()[0] if text.split() else "?")
+        try:
+            reply = handle_command(text, state)
+        except Exception as exc:  # a bad command must never kill the run
+            reply = "That command failed: %s" % exc
+            log("command %r failed: %s" % (text[:40], exc))
+        if reply:
+            send_telegram(reply)
+    save_state(state)
+    return len(messages)
 
 
 # --------------------------------------------------------------------------
@@ -861,13 +1175,27 @@ def run_watch(interval: int = POLL_INTERVAL_SECONDS) -> int:
     """The polling run. Returns a process exit code."""
     state = load_state()
 
-    # --- active-hours gate: FIRST, before any network call at all. Outside
+    # --- commands first: a /resume sent from a phone must be able to wake a
+    # paused watcher, so this runs even when everything below is skipped.
+    process_commands(state)
+
+    if is_paused(state):
+        log("paused (%s) since %s - the submission page will not be polled. "
+            "Send /resume to the Telegram bot to restart."
+            % (state.get("paused_reason") or "manual",
+               state.get("paused_at_utc") or "unknown"))
+        check_answers(state)
+        save_state(state)
+        return 0
+
+    # --- active-hours gate: before any request to the watched site. Outside
     # the configured hours this run must cost the site nothing, not even a
     # robots.txt fetch.
     started = utc_now()
     if not is_active_hour(started):
         log("target hour %02d:00 %s is outside the active window (%s) - nothing to do"
             % (target_hour_local(started), TZ_LABEL, describe_active_hours()))
+        check_answers(state)
         save_state(state)
         return 0
 
@@ -942,6 +1270,7 @@ def run_watch(interval: int = POLL_INTERVAL_SECONDS) -> int:
             break
         time.sleep(min(interval, max(1, (deadline - now).total_seconds())))
 
+    check_answers(state)
     save_state(state)
     return 0
 
@@ -1227,22 +1556,81 @@ def _git(*args) -> tuple:
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
-def cmd_mark(question_id: str, new_status: str, fatwa_url: str = None) -> int:
-    entries = load_queue()
-    target = next((e for e in entries if str(e.get("id")) == str(question_id)), None)
-    if target is None:
-        print("No queue entry with id %r. Known ids: %s"
-              % (question_id, ", ".join(str(e.get("id")) for e in entries)), file=sys.stderr)
-        return 1
-    target["status"] = new_status
-    if new_status == "sent":
-        target["sent_at"] = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
-    if fatwa_url:
-        target["fatwa_url"] = fatwa_url
-    save_queue(entries)
-    print("Marked %s as %s." % (question_id, new_status))
+def find_entry(entries: list, question_id: str):
+    return next((e for e in entries if str(e.get("id")) == str(question_id)), None)
 
-    code, output = _git("add", str(QUEUE_PATH.relative_to(ROOT)))
+
+def mark_sent(question_id: str, reference: str = None, state: dict = None):
+    """Mark a question submitted, record what to track, and pause polling.
+
+    Pausing here is the point: once a question is in, there is nothing to
+    watch the submission page for, so every further poll is wasted.
+    """
+    entries = load_queue()
+    entry = find_entry(entries, question_id)
+    if entry is None:
+        return False, ("No queue entry with id %r. Known ids: %s"
+                       % (question_id, ", ".join(str(e.get("id")) for e in entries)))
+    entry["status"] = "sent"
+    entry["sent_at"] = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    if reference:
+        entry["fatwa_ref"] = reference
+    save_queue(entries)
+
+    lines = ["Marked %s as sent." % question_id]
+    if reference:
+        lines.append("Tracking %s - you'll get a message when it is answered."
+                     % tracking_url(reference))
+    else:
+        lines.append("No reference recorded, so the answer cannot be tracked. "
+                     "Send /track %s <number or link> when you have it." % question_id)
+    if state is not None:
+        lines.append(set_paused(state, True, PAUSE_SUBMITTED))
+        lines.append("Send /resume when you want to ask the next one.")
+    return True, "\n".join(lines)
+
+
+def attach_reference(question_id: str, reference: str):
+    """Point an already-sent question at the number or link to watch."""
+    entries = load_queue()
+    entry = find_entry(entries, question_id)
+    if entry is None:
+        return False, "No queue entry with id %r." % question_id
+    entry["fatwa_ref"] = reference
+    if str(entry.get("status", "")).lower() == "queued":
+        entry["status"] = "sent"
+        entry["sent_at"] = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    save_queue(entries)
+    return True, ("Tracking %s for %s. You'll get a message when it is answered."
+                  % (tracking_url(reference), question_id))
+
+
+def cmd_mark(question_id: str, new_status: str, fatwa_url: str = None) -> int:
+    if new_status == "sent":
+        state = load_state()
+        ok, message = mark_sent(question_id, fatwa_url, state)
+        print(message, file=sys.stdout if ok else sys.stderr)
+        if not ok:
+            return 1
+        save_state(state)
+    else:
+        entries = load_queue()
+        target = find_entry(entries, question_id)
+        if target is None:
+            print("No queue entry with id %r. Known ids: %s"
+                  % (question_id, ", ".join(str(e.get("id")) for e in entries)),
+                  file=sys.stderr)
+            return 1
+        target["status"] = new_status
+        if new_status == "answered":
+            target["answered_at"] = utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        if fatwa_url:
+            target["fatwa_url"] = fatwa_url
+        save_queue(entries)
+        print("Marked %s as %s." % (question_id, new_status))
+
+    code, output = _git("add", str(QUEUE_PATH.relative_to(ROOT)),
+                        str(STATE_PATH.relative_to(ROOT)))
     if code != 0:
         print("git add failed: %s" % output, file=sys.stderr)
         return 0
@@ -1274,9 +1662,26 @@ def main(argv=None) -> int:
                        help="print the effective configuration and exit")
     group.add_argument("--remind", action="store_true",
                        help="degraded mode: send the next queued question, no scraping")
+    group.add_argument("--check-answers", action="store_true",
+                       help="check tracked questions for published answers")
+    group.add_argument("--commands", action="store_true",
+                       help="read and run pending Telegram commands, then exit")
+    group.add_argument("--pause", action="store_true",
+                       help="stop polling the submission page")
+    group.add_argument("--resume", action="store_true",
+                       help="start polling the submission page again")
+    group.add_argument("--status", action="store_true",
+                       help="print what the watcher is currently doing")
+    group.add_argument("--track", metavar="ID",
+                       help="attach a question number or link to a sent entry "
+                            "(use with --ref)")
     group.add_argument("--mark-sent", metavar="ID", help="mark a queue entry as sent")
     group.add_argument("--mark-answered", metavar="ID", help="mark a queue entry as answered")
     parser.add_argument("--fatwa-url", help="fatwa URL to record with --mark-answered")
+    parser.add_argument("--ref", help="the Islamweb question number, or a full link, "
+                                      "to track for an answer")
+    parser.add_argument("--force", action="store_true",
+                        help="with --check-answers, ignore the check interval")
     parser.add_argument("--url", help="with --dump, probe this URL instead of the "
                                      "configured page")
     parser.add_argument("--write", action="store_true",
@@ -1301,8 +1706,33 @@ def main(argv=None) -> int:
         return cmd_show_config()
     if args.remind:
         return run_reminder()
+    if args.check_answers:
+        state = load_state()
+        found = check_answers(state, force=args.force)
+        save_state(state)
+        print("%d question(s) newly answered." % found)
+        return 0
+    if args.commands:
+        state = load_state()
+        ran = process_commands(state)
+        print("%d command(s) processed." % ran)
+        return 0
+    if args.pause or args.resume:
+        state = load_state()
+        print(set_paused(state, bool(args.pause), PAUSE_MANUAL if args.pause else None))
+        save_state(state)
+        return 0
+    if args.status:
+        print(compose_status(load_state()))
+        return 0
+    if args.track:
+        if not args.ref:
+            parser.error("--track needs --ref <question number or link>")
+        ok, message = attach_reference(args.track, args.ref)
+        print(message, file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
     if args.mark_sent:
-        return cmd_mark(args.mark_sent, "sent", args.fatwa_url)
+        return cmd_mark(args.mark_sent, "sent", args.ref or args.fatwa_url)
     if args.mark_answered:
         return cmd_mark(args.mark_answered, "answered", args.fatwa_url)
     parser.error("no command given")

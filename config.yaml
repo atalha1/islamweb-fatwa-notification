@@ -58,6 +58,41 @@ schedule:
   # Consecutive OPEN readings required before an alert fires.
   consecutive_open_required: 2
 
+# ---------------------------------------------------------------------------
+# Answer tracking: watch a submitted question until its answer is published.
+# ---------------------------------------------------------------------------
+tracking:
+  enabled: true
+
+  # A bare number is turned into a URL with this template. Paste a full link
+  # instead and it is used as-is, so this only matters for numbers.
+  #
+  # The TRAILING SLASH matters: /ar/fatwa/447769/ resolves, /ar/fatwa/447769
+  # returns the "no fatwa with this number" page even for a real fatwa.
+  url_template: "https://www.islamweb.net/ar/fatwa/{id}/"
+
+  # Islamweb renders exactly this when the number has no published fatwa.
+  # Confirmed live on 2026-09-15 against /ar/fatwa/1.
+  not_published_markers:
+    - لا يوجد فتوي بهذا الرقم
+    - لا توجد فتوى بهذا الرقم
+
+  # A published fatwa page carries these; the not-found page does not.
+  # Confirmed live on 2026-09-15 by diffing /ar/fatwa/447769/ (a real fatwa)
+  # against /ar/fatwa/1/ (no such fatwa).
+  #
+  # "تم نسخ الرابط" is the share widget, which only content pages render, so
+  # it is the clean discriminator. "السؤال" also appears on the not-found
+  # page inside the phrase "رقم السؤال", which is harmless only because
+  # not_published_markers are checked first - do not reorder that.
+  published_markers:
+    - تم نسخ الرابط
+    - السؤال
+
+  # How often to check tracked questions. Answers take days, so hourly would
+  # be rude and pointless.
+  check_interval_hours: 6
+
 alerts:
   # Characters of the question body to include in the message.
   body_preview_chars: 300

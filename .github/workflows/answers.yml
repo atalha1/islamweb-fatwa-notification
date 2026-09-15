@@ -1,0 +1,74 @@
+# Keeps two things alive independently of the submission-page watcher:
+#
+#   * Telegram commands - so /resume reaches a paused watcher, and /status
+#     answers, without waiting for the next hourly run.
+#   * Answer tracking - checks whether any submitted question has been
+#     published yet, at the interval set in config.yaml.
+#
+# This job makes at most a handful of requests, so it is cheap to run often.
+name: answers
+
+on:
+  schedule:
+    # Every two hours. watch.py enforces tracking.check_interval_hours on top
+    # of this, so the site is only polled as often as the config allows.
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: islamweb-answers
+  cancel-in-progress: false
+
+jobs:
+  answers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Run pending Telegram commands
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python watch.py --commands
+
+      - name: Check tracked questions for answers
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python watch.py --check-answers
+
+      - name: Commit queue and state changes
+        if: always()
+        run: |
+          set -u
+          git config user.name  "islamweb-watcher"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add questions/queue.yaml || true
+          [ -f state.json ] && git add state.json || true
+          if git diff --cached --quiet; then
+            echo "Nothing changed."
+            exit 0
+          fi
+          git commit -m "queue: answer check $(date -u +%Y-%m-%dT%H:%MZ)"
+          for attempt in 1 2 3 4; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Pushed on attempt ${attempt}."
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::warning::Could not push after 4 attempts."

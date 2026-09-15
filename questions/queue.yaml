@@ -1,10 +1,15 @@
 # Questions waiting to be asked on Islamweb, highest priority (lowest number) first.
 #
 # status : queued | sent | answered
+#
 # After you submit a question by hand, run:
-#     python watch.py --mark-sent <id>
-# When the answer is published, run:
-#     python watch.py --mark-answered <id> --fatwa-url https://...
+#     python watch.py --mark-sent <id> --ref <question number or link>
+# That does three things: marks it sent, records what to track, and pauses
+# submission-page polling until the answer arrives.
+#
+# fatwa_ref  : the number Islamweb gives you, or a full link. Either works.
+# fatwa_url  : filled in automatically once the answer is found.
+# answered_at: filled in automatically.
 #
 # Replace these three placeholders with your real questions.
 
@@ -17,7 +22,9 @@
     ضع هنا نص سؤالك الأول كاملاً. هذا مجرد نص مؤقت للتجربة، استبدله بسؤالك
     الحقيقي قبل تشغيل الأداة. يُرسل أول ٣٠٠ حرف من هذا النص في رسالة التنبيه.
   sent_at: null
+  fatwa_ref: null
   fatwa_url: null
+  answered_at: null
 
 - id: q-002
   priority: 2
@@ -27,7 +34,9 @@
   body: >-
     ضع هنا نص سؤالك الثاني كاملاً. استبدل هذا النص المؤقت بسؤالك الحقيقي.
   sent_at: null
+  fatwa_ref: null
   fatwa_url: null
+  answered_at: null
 
 - id: q-003
   priority: 3
@@ -39,4 +48,6 @@
     first 300 characters are included in the alert message so you can paste
     straight from your phone.
   sent_at: null
+  fatwa_ref: null
   fatwa_url: null
+  answered_at: null

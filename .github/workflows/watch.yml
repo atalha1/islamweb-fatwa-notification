@@ -30,7 +30,8 @@ on:
         required: true
         default: 'run'
         type: choice
-        options: [run, once, check-robots, test-alert, dump, report, show-config]
+        options: [run, once, check-robots, test-alert, dump, report, show-config,
+                  status, pause, resume, check-answers, commands]
 
 permissions:
   contents: write
@@ -76,6 +77,11 @@ jobs:
             dump)         python watch.py --dump ${{ inputs.url && format('--url {0}', inputs.url) || '' }} ;;
             report)       python watch.py --report ;;
             show-config)  python watch.py --show-config ;;
+            status)       python watch.py --status ;;
+            pause)        python watch.py --pause ;;
+            resume)       python watch.py --resume ;;
+            check-answers) python watch.py --check-answers --force ;;
+            commands)     python watch.py --commands ;;
             *)            python watch.py --run ;;
           esac
 
