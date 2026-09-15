@@ -77,14 +77,51 @@ a GitHub runner: **Actions → watch → Run workflow → mode: `check-robots`**
 
 | State | Condition |
 |---|---|
-| `CLOSED` | the page contains `نعتذر عن استقبال الأسئلة` |
+| `CLOSED` | the page contains `نعتذر عن استقبال الأسئلة`, **or** one of the fallback phrases `نعتذر`, `اكتمل العدد`, `اكتمال العدد`, `لا نستقبل` |
 | `OPEN` | that string is **absent** *and* the page contains a `<form method="post">` whose action resolves to a fatwa/question endpoint *and* which contains a `<textarea>` |
 | `UNKNOWN` | neither condition holds — the markup changed |
 
-The `<textarea>` requirement is what stops the site-wide search box from being
-mistaken for the question form. Arabic matching is done after folding away
-diacritics, tatweel, alef/ya/ta-marbuta variants and whitespace, so the marker
-still matches if it is split across tags or restyled.
+"Looks like a fatwa-question endpoint" means **either** the form carries at
+least two of the field names the live form uses — `question`, `guestname`,
+`hidden_vercode`, `btsubmit` — **or** its action resolves to a path containing
+a fatwa/ask/question hint. The field-name signature is the stronger of the two
+and the reason the first is tried first (see "What the live page actually looks
+like" below).
+
+Arabic matching is done after folding away diacritics, tatweel,
+alef/ya/ta-marbuta variants and whitespace, so the marker still matches if it
+is split across tags or restyled.
+
+### What the live page actually looks like
+
+Two things were found by dumping the real page from a runner
+(`python watch.py --dump`), and both would have broken a textbook
+implementation:
+
+**The page is served as `text/html` with no `charset`.** `requests` then falls
+back to ISO-8859-1, and `response.text` returns mojibake for every Arabic
+character — so a naive `if MARKER in response.text` is always `False` and the
+watcher reports `OPEN` forever. `decode_response()` honours an explicit
+charset, then the document's own `<meta charset>`, then UTF-8, and never
+trusts the guess.
+
+**The question form has no attributes at all** — literally `<form>`, with no
+`method` and no `action`. It is the only `<form>` on the page (the site search
+is JavaScript, not a form), and its fields are `visitor_id`, `guestname`,
+`email`, `gender`, `hidden_vercode`, `question`, `remLen`, `btcheck`,
+`btsubmit`. Matching on the action alone was therefore weak, which is why the
+field-name signature exists.
+
+If either of these changes, `--dump` is the tool for re-tuning: it prints every
+form with its fields, the marker checks, and the decoded visible text, and it
+sends nothing.
+
+The fallback phrases are a deliberate safety net. Every live check so far has
+caught the window **open**, so the exact apology wording has not been seen with
+its Arabic decoded correctly. Erring towards `CLOSED` costs at most a missed
+alert; erring the other way would fire a false alert every single hour. Once a
+closed page has been observed, `--dump` will show the real wording and the
+fallbacks can be tightened.
 
 **Debounce:** two consecutive `OPEN` polls, 20 seconds apart, are required
 before an alert fires. A single garbage response cannot trigger one.
@@ -204,6 +241,7 @@ hours fill instantly. That dataset decides which hour to target.
 pip install -r requirements-dev.txt
 
 python watch.py --once           # one check, prints the state, sends NOTHING
+python watch.py --dump           # page structure: forms, fields, decoded text
 python watch.py --check-robots   # robots.txt verdict + the full file
 python watch.py --test-alert     # one test message through BOTH channels
 python watch.py --run            # a full polling run (what CI does)
@@ -262,6 +300,23 @@ your real questions.
 
 ---
 
+## Verified live
+
+Everything below was run against the real site from a GitHub Actions runner on
+15 September 2026, not just against fixtures:
+
+* `robots.txt` fetched and parsed — `/ar/fatwa/` is not disallowed.
+* The fatwa page fetched, decoded and classified — `OPEN` at 13:02 Makkah,
+  with the question form and its submission instructions present, which is
+  exactly what the top of the hour should look like.
+* The `--dump` output confirmed the form's field names and that the page
+  carries no charset header.
+
+Not yet verified live: the page in its **closed** state. The first scheduled
+run that catches it will record a `CLOSED` row in `log/observations.csv`; if it
+records `UNKNOWN` instead, you will get the one-per-24h "structure changed"
+alert and `--dump` will show the real apology wording.
+
 ## Stack
 
 Python 3.11, `requests` for HTTP. `PyYAML` is the one additional dependency —
@@ -279,5 +334,5 @@ state.json                          alert cooldowns and the retry flag (created 
 .github/workflows/watch.yml         the hourly poller
 .github/workflows/tests.yml         CI
 .github/workflows/daily-reminder.yml  degraded mode, disabled by default
-tests/                              52 tests
+tests/                              65 tests
 ```

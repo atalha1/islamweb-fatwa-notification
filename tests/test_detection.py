@@ -97,3 +97,24 @@ def test_a_comment_box_is_not_the_question_form():
             '<textarea name="comment_body"></textarea>'
             '<input name="commenter"></form>')
     assert watch.find_question_form(page) is None
+
+
+def test_a_reworded_apology_still_reads_as_closed():
+    """The exact closed wording has not been seen live; don't fire on a reword."""
+    page = ('<html><body><p>نعتذر، لا نستقبل الأسئلة حالياً</p>'
+            '<form><textarea name="question"></textarea>'
+            '<input name="guestname"></form></body></html>')
+    state, detail = watch.classify(page)
+    assert state == watch.STATE_CLOSED
+    assert "fallback" in detail
+
+
+def test_a_full_quota_notice_reads_as_closed():
+    page = "<html><body>اكتمل العدد المحدد لهذه الساعة</body></html>"
+    assert watch.classify(page)[0] == watch.STATE_CLOSED
+
+
+def test_the_live_open_page_has_none_of_the_closed_phrases():
+    """Guards the fallbacks against being so broad they match an open page."""
+    page = fixture("open_live.html")
+    assert watch.classify(page)[0] == watch.STATE_OPEN

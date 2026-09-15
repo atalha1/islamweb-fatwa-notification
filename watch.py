@@ -66,6 +66,19 @@ ROBOTS_URL = "https://www.%s/robots.txt" % ISLAMWEB_HOST
 # The page renders this apology block while submissions are closed.
 CLOSED_MARKER = "نعتذر عن استقبال الأسئلة"
 
+# Broader phrases that also mean "closed". The exact apology wording has not
+# been observed live yet (every check so far caught the window open), so these
+# are a deliberate safety net: a page that apologises or says the quota is full
+# reads as CLOSED even if the primary marker was reworded. Being wrong in this
+# direction costs a missed alert; being wrong the other way would fire a false
+# alert every hour.
+CLOSED_MARKER_FALLBACKS = (
+    "نعتذر",           # "we apologise"
+    "اكتمل العدد",     # "the quota is full"
+    "اكتمال العدد",
+    "لا نستقبل",       # "we are not accepting"
+)
+
 # A fatwa-question form posts to a path containing one of these hints.
 FORM_ACTION_HINTS = ("fatwa", "ask", "question", "سؤال", "اسأل")
 
@@ -380,9 +393,14 @@ def classify(page_html: str, page_url: str = FATWA_PAGE_URL):
         return STATE_UNKNOWN, "empty response body"
 
     text = normalize_arabic(html_to_text(page_html))
+    raw = normalize_arabic(page_html)
     marker = normalize_arabic(CLOSED_MARKER)
-    if marker in text or marker in normalize_arabic(page_html):
+    if marker in text or marker in raw:
         return STATE_CLOSED, "closed marker present"
+    for fallback in CLOSED_MARKER_FALLBACKS:
+        folded = normalize_arabic(fallback)
+        if folded in text or folded in raw:
+            return STATE_CLOSED, "closed fallback marker present: %s" % fallback
 
     action = find_question_form(page_html, page_url)
     if action:
