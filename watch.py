@@ -807,6 +807,49 @@ def cmd_check_robots() -> int:
     return 0
 
 
+def cmd_dump() -> int:
+    """Print the page's structure so a human can re-tune detection. Read-only."""
+    session = make_session()
+    try:
+        response = session.get(FATWA_PAGE_URL, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as exc:
+        print("fetch failed: %s" % exc)
+        return 1
+    response.encoding = response.encoding or "utf-8"
+    page = response.text
+    print("http           : %s" % response.status_code)
+    print("content-type   : %s" % response.headers.get("Content-Type"))
+    print("bytes          : %d" % len(response.content))
+
+    normalized = normalize_arabic(html_to_text(page))
+    for label, needle in [
+        ("CLOSED_MARKER", CLOSED_MARKER),
+        ("نعتذر", "نعتذر"),
+        ("استقبال", "استقبال"),
+        ("اكتمال", "اكتمال"),
+        ("العدد", "العدد"),
+    ]:
+        print("contains %-14s: %s" % (label, normalize_arabic(needle) in normalized))
+
+    forms = list(re.finditer(r"<form\b(?P<attrs>[^>]*)>(?P<body>.*?)</form>",
+                             page, re.I | re.S))
+    print("\nforms found    : %d" % len(forms))
+    for index, match in enumerate(forms, 1):
+        attrs, body = match.group("attrs"), match.group("body")
+        names = re.findall(r"<(?:input|textarea|select)\b[^>]*?name\s*=\s*[\"']([^\"']+)",
+                           body, re.I)
+        print("  [%d] attrs=%s" % (index, " ".join(attrs.split())[:180]))
+        print("      textarea=%s fields=%s"
+              % (bool(re.search(r"<textarea\b", body, re.I)), names[:12]))
+
+    print("\n----- visible text, first 1200 chars -----")
+    print(normalized[:1200])
+    print("----- end -----")
+    state_name, detail = classify(page, FATWA_PAGE_URL)
+    print("\nclassified as  : %s (%s)" % (state_name, detail))
+    return 0
+
+
 def cmd_test_alert() -> int:
     state = load_state()
     now = utc_now()
@@ -865,6 +908,8 @@ def main(argv=None) -> int:
                        help="send one test message through both channels")
     group.add_argument("--check-robots", action="store_true",
                        help="print the robots.txt verdict for the fatwa page")
+    group.add_argument("--dump", action="store_true",
+                       help="print the page structure for re-tuning detection")
     group.add_argument("--remind", action="store_true",
                        help="degraded mode: send the next queued question, no scraping")
     group.add_argument("--mark-sent", metavar="ID", help="mark a queue entry as sent")
@@ -882,6 +927,8 @@ def main(argv=None) -> int:
         return cmd_test_alert()
     if args.check_robots:
         return cmd_check_robots()
+    if args.dump:
+        return cmd_dump()
     if args.remind:
         return run_reminder()
     if args.mark_sent:

@@ -28,8 +28,26 @@ Do not remove the guard. Do not add an auto-submit flag.
 ## robots.txt finding
 
 <!-- ROBOTS-FINDING-START -->
-**Status: pending verification.** The check is automated — see
-"Verifying robots.txt" below.
+**Checked 15 September 2026 from a GitHub Actions runner. `/ar/fatwa/` is NOT
+disallowed, so the polling design stands.**
+
+`https://www.islamweb.net/robots.txt` is two lines, in full:
+
+```
+User-agent: *
+Disallow: /newislamweb/
+```
+
+There is one group, for the generic `*` user-agent, and it disallows exactly
+one path prefix: `/newislamweb/`. There is no rule matching `/ar/fatwa/`, no
+`Crawl-delay`, and no `Sitemap`. Polling the fatwa page with a generic user
+agent is permitted.
+
+One practical gotcha found while checking, worth knowing if you ever curl this
+site by hand: islamweb runs IIS with strict content negotiation. Requesting
+`robots.txt` with `Accept: text/html` gets you an **HTTP 406** error page
+rather than the file. The watcher now sends `Accept: text/plain,*/*` for
+robots and keeps a `*/*` fallback on the page request.
 <!-- ROBOTS-FINDING-END -->
 
 The watcher does not take this finding on trust. **Every run re-fetches
