@@ -91,3 +91,36 @@ def test_unreachable_robots_is_reported_as_unknown_not_as_permission(monkeypatch
 
     verdict = watch.check_robots(Boom())
     assert verdict["allowed"] is None
+
+
+def test_robots_is_requested_with_an_accept_header_that_allows_plain_text():
+    """Regression: islamweb's IIS returns HTTP 406 for a narrow Accept header."""
+    captured = {}
+
+    class Recorder:
+        def get(self, url, **kwargs):
+            captured.update(kwargs.get("headers") or {})
+            raise requests.ConnectionError("stop here")
+
+    watch.check_robots(Recorder())
+    assert "text/plain" in captured.get("Accept", "")
+
+
+def test_the_page_session_accepts_anything_as_a_fallback():
+    assert "*/*" in watch.make_session().headers["Accept"]
+
+
+def test_an_html_error_page_is_not_mistaken_for_robots_rules():
+    class FakeResponse:
+        status_code = 200
+        encoding = "utf-8"
+        headers = {"Content-Type": "text/html"}
+        text = "<html><body><h2>406 - Client browser does not accept...</h2></body></html>"
+
+    class Server:
+        def get(self, *a, **k):
+            return FakeResponse()
+
+    verdict = watch.check_robots(Server())
+    assert verdict["allowed"] is None
+    assert "HTML" in verdict["reason"]

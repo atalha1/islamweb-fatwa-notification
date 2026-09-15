@@ -151,7 +151,10 @@ def make_session() -> ReadOnlyIslamwebSession:
     session.headers.update(
         {
             "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
+            # islamweb runs IIS with strict content negotiation: a narrow
+            # Accept header earns an HTTP 406 instead of the page. Always
+            # keep the */* fallback.
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Language": "ar,en;q=0.8",
         }
     )
@@ -243,7 +246,11 @@ def robots_verdict(robots_text: str, path: str, agent: str = "*") -> dict:
 def check_robots(session: requests.Session) -> dict:
     """Fetch robots.txt and decide whether polling is permitted."""
     try:
-        response = session.get(ROBOTS_URL, timeout=HTTP_TIMEOUT)
+        response = session.get(
+            ROBOTS_URL,
+            timeout=HTTP_TIMEOUT,
+            headers={"Accept": "text/plain,*/*;q=0.8"},
+        )
     except requests.RequestException as exc:
         return {"allowed": None, "reason": "fetch failed: %s" % exc, "crawl_delay": None,
                 "text": "", "status": 0}
@@ -254,6 +261,12 @@ def check_robots(session: requests.Session) -> dict:
         return {"allowed": None, "reason": "robots.txt returned HTTP %d" % response.status_code,
                 "crawl_delay": None, "text": response.text[:2000], "status": response.status_code}
     response.encoding = response.encoding or "utf-8"
+    content_type = response.headers.get("Content-Type", "")
+    if "html" in content_type.lower() or "<html" in response.text[:500].lower():
+        return {"allowed": None,
+                "reason": "robots.txt came back as HTML (%s), not a rules file"
+                          % (content_type or "no content-type"),
+                "crawl_delay": None, "text": response.text[:2000], "status": 200}
     verdict = robots_verdict(response.text, FATWA_PAGE_PATH)
     # Also report on the unencoded directory form, which is what a human reads.
     verdict["dir_verdict"] = robots_verdict(response.text, "/ar/fatwa/")
