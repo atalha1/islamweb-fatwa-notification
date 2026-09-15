@@ -1048,11 +1048,13 @@ def cmd_show_config() -> int:
     return 0
 
 
-def cmd_dump() -> int:
-    """Print the page's structure so a human can re-tune detection. Read-only."""
+def cmd_dump(url: str = None) -> int:
+    """Print a page's structure so a human can re-tune detection. Read-only."""
+    url = url or PAGE_URL
     session = make_session()
+    print("url            : %s" % url)
     try:
-        response = session.get(PAGE_URL, timeout=HTTP_TIMEOUT)
+        response = session.get(url, timeout=HTTP_TIMEOUT)
     except requests.RequestException as exc:
         print("fetch failed: %s" % exc)
         return 1
@@ -1085,7 +1087,7 @@ def cmd_dump() -> int:
     print("\n----- visible text, first 1200 chars -----")
     print(normalized[:1200])
     print("----- end -----")
-    state_name, detail = classify(page, PAGE_URL)
+    state_name, detail = classify(page, url)
     print("\nclassified as  : %s (%s)" % (state_name, detail))
     return 0
 
@@ -1275,6 +1277,8 @@ def main(argv=None) -> int:
     group.add_argument("--mark-sent", metavar="ID", help="mark a queue entry as sent")
     group.add_argument("--mark-answered", metavar="ID", help="mark a queue entry as answered")
     parser.add_argument("--fatwa-url", help="fatwa URL to record with --mark-answered")
+    parser.add_argument("--url", help="with --dump, probe this URL instead of the "
+                                     "configured page")
     parser.add_argument("--write", action="store_true",
                         help="with --report, also write log/REPORT.md")
     parser.add_argument("--interval", type=int, default=POLL_INTERVAL_SECONDS,
@@ -1290,7 +1294,7 @@ def main(argv=None) -> int:
     if args.check_robots:
         return cmd_check_robots()
     if args.dump:
-        return cmd_dump()
+        return cmd_dump(args.url)
     if args.report:
         return cmd_report(write=args.write)
     if args.show_config:

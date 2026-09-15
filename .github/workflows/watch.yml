@@ -21,6 +21,10 @@ on:
     - cron: '52 6-19 * * *'
   workflow_dispatch:
     inputs:
+      url:
+        description: 'With mode=dump, probe this URL instead of the configured page'
+        required: false
+        type: string
       mode:
         description: 'What to run'
         required: true
@@ -69,7 +73,7 @@ jobs:
             once)         python watch.py --once ;;
             check-robots) python watch.py --check-robots ;;
             test-alert)   python watch.py --test-alert ;;
-            dump)         python watch.py --dump ;;
+            dump)         python watch.py --dump ${{ inputs.url && format('--url {0}', inputs.url) || '' }} ;;
             report)       python watch.py --report ;;
             show-config)  python watch.py --show-config ;;
             *)            python watch.py --run ;;
