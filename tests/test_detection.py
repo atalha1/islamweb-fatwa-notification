@@ -73,3 +73,27 @@ def test_empty_body_is_unknown(page):
 def test_garbage_body_is_unknown():
     state, _ = watch.classify("<html><body>502 Bad Gateway</body></html>")
     assert state == watch.STATE_UNKNOWN
+
+
+def test_the_live_form_shape_is_detected_despite_having_no_attributes():
+    """The real form carries no method and no action; its field names identify it."""
+    state, _ = watch.classify(fixture("open_live.html"))
+    assert state == watch.STATE_OPEN
+
+
+def test_one_known_field_name_alone_is_not_enough():
+    page = '<form><textarea name="question"></textarea></form>'
+    assert watch.find_question_form(page, "https://example.com/unrelated") is None
+
+
+def test_two_known_field_names_are_enough_even_off_a_fatwa_url():
+    page = ('<form><textarea name="question"></textarea>'
+            '<input name="guestname"></form>')
+    assert watch.find_question_form(page, "https://example.com/unrelated") is not None
+
+
+def test_a_comment_box_is_not_the_question_form():
+    page = ('<form method="post" action="/ar/articles/comment">'
+            '<textarea name="comment_body"></textarea>'
+            '<input name="commenter"></form>')
+    assert watch.find_question_form(page) is None

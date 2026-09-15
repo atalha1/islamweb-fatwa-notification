@@ -69,6 +69,12 @@ CLOSED_MARKER = "نعتذر عن استقبال الأسئلة"
 # A fatwa-question form posts to a path containing one of these hints.
 FORM_ACTION_HINTS = ("fatwa", "ask", "question", "سؤال", "اسأل")
 
+# The live form (observed 2026-09-15) carries no attributes at all - no
+# method, no action - so the action heuristic alone is weak. Its field names
+# are distinctive, though, and are the strongest signal the page gives us.
+QUESTION_FIELD_NAMES = ("question", "guestname", "hidden_vercode", "btsubmit")
+QUESTION_FIELDS_REQUIRED = 2
+
 MAKKAH_TZ = timezone(timedelta(hours=3))  # UTC+3, no DST, ever.
 
 POLL_INTERVAL_SECONDS = 20  # politeness floor; never lower this
@@ -260,17 +266,17 @@ def check_robots(session: requests.Session) -> dict:
     if response.status_code != 200:
         return {"allowed": None, "reason": "robots.txt returned HTTP %d" % response.status_code,
                 "crawl_delay": None, "text": response.text[:2000], "status": response.status_code}
-    response.encoding = response.encoding or "utf-8"
     content_type = response.headers.get("Content-Type", "")
     if "html" in content_type.lower() or "<html" in response.text[:500].lower():
         return {"allowed": None,
                 "reason": "robots.txt came back as HTML (%s), not a rules file"
                           % (content_type or "no content-type"),
                 "crawl_delay": None, "text": response.text[:2000], "status": 200}
-    verdict = robots_verdict(response.text, FATWA_PAGE_PATH)
+    robots_text = decode_response(response)
+    verdict = robots_verdict(robots_text, FATWA_PAGE_PATH)
     # Also report on the unencoded directory form, which is what a human reads.
-    verdict["dir_verdict"] = robots_verdict(response.text, "/ar/fatwa/")
-    verdict["text"] = response.text
+    verdict["dir_verdict"] = robots_verdict(robots_text, "/ar/fatwa/")
+    verdict["text"] = robots_text
     verdict["status"] = 200
     return verdict
 
@@ -278,6 +284,29 @@ def check_robots(session: requests.Session) -> dict:
 # --------------------------------------------------------------------------
 # Page classification
 # --------------------------------------------------------------------------
+
+def decode_response(response) -> str:
+    """Decode a response the way a browser would.
+
+    islamweb serves the fatwa page as `text/html` with **no charset**, so
+    requests falls back to ISO-8859-1 and every Arabic byte comes back as
+    mojibake - which silently breaks marker matching. Honour an explicit
+    charset if there is one, then the document's own meta charset, then
+    UTF-8. Never trust requests' guess.
+    """
+    content_type = response.headers.get("Content-Type", "")
+    if "charset=" in content_type.lower():
+        return response.text
+    raw = response.content
+    match = re.search(br"""charset\s*=\s*["']?\s*([A-Za-z0-9_-]+)""", raw[:4096], re.I)
+    encoding = match.group(1).decode("ascii", "ignore") if match else "utf-8"
+    for candidate in (encoding, "utf-8"):
+        try:
+            return raw.decode(candidate, errors="replace")
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
 
 _TAG_RE = re.compile(r"<(script|style)\b.*?</\1>", re.I | re.S)
 _ANY_TAG_RE = re.compile(r"<[^>]+>")
@@ -305,10 +334,14 @@ def find_question_form(page_html: str, page_url: str = FATWA_PAGE_URL):
     """Return the resolved action URL of a fatwa-question form, or None.
 
     A match requires all three of:
-      * a <form> whose method is POST (or unspecified, which some pages rely on),
-      * an action resolving to a path that looks like a fatwa/question endpoint,
-      * a <textarea> inside the form - the question body field. This is what
-        keeps the site-wide search box from being mistaken for the form.
+      * a <textarea> inside the form - the question body field,
+      * a method that is POST or unspecified (the live form sets neither),
+      * and EITHER at least two of the known question-form field names
+        (question, guestname, hidden_vercode, btsubmit) OR an action
+        resolving to a fatwa/question endpoint.
+
+    The field-name signature is what keeps some other textarea-bearing form
+    (a comment box, a feedback widget) from being mistaken for this one.
     """
     for match in re.finditer(r"<form\b(?P<attrs>[^>]*)>(?P<body>.*?)</form>",
                              page_html, re.I | re.S):
@@ -325,6 +358,16 @@ def find_question_form(page_html: str, page_url: str = FATWA_PAGE_URL):
         if action_match:
             raw_action = next((g for g in action_match.groups() if g is not None), "")
         resolved = urljoin(page_url, raw_action.strip() or "")
+
+        field_names = {
+            name.lower() for name in
+            re.findall(r"<(?:input|textarea|select)\b[^>]*?name\s*=\s*[\"']([^\"']+)",
+                       body, re.I)
+        }
+        matched_fields = field_names.intersection(QUESTION_FIELD_NAMES)
+        if len(matched_fields) >= QUESTION_FIELDS_REQUIRED:
+            return resolved
+
         haystack = html_mod.unescape(resolved).lower()
         if any(hint.lower() in haystack for hint in FORM_ACTION_HINTS):
             return resolved
@@ -617,8 +660,7 @@ def poll_once(session: requests.Session):
         return 0, STATE_UNKNOWN, "request failed: %s" % exc
     if response.status_code != 200:
         return response.status_code, STATE_UNKNOWN, "HTTP %d" % response.status_code
-    response.encoding = response.encoding or "utf-8"
-    state_name, detail = classify(response.text, FATWA_PAGE_URL)
+    state_name, detail = classify(decode_response(response), FATWA_PAGE_URL)
     return 200, state_name, detail
 
 
@@ -815,8 +857,7 @@ def cmd_dump() -> int:
     except requests.RequestException as exc:
         print("fetch failed: %s" % exc)
         return 1
-    response.encoding = response.encoding or "utf-8"
-    page = response.text
+    page = decode_response(response)
     print("http           : %s" % response.status_code)
     print("content-type   : %s" % response.headers.get("Content-Type"))
     print("bytes          : %d" % len(response.content))

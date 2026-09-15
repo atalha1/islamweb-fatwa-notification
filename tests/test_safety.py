@@ -124,3 +124,47 @@ def test_an_html_error_page_is_not_mistaken_for_robots_rules():
     verdict = watch.check_robots(Server())
     assert verdict["allowed"] is None
     assert "HTML" in verdict["reason"]
+
+
+def test_arabic_survives_a_response_with_no_charset_in_the_content_type():
+    """Regression: islamweb sends text/html with no charset.
+
+    requests then guesses ISO-8859-1 and .text returns mojibake, which made
+    every Arabic marker comparison fail silently.
+    """
+    arabic = "نعتذر عن استقبال الأسئلة"
+    body = ('<html><head><meta charset="utf-8"></head><body>%s</body></html>'
+            % arabic).encode("utf-8")
+
+    class NoCharsetResponse:
+        content = body
+        headers = {"Content-Type": "text/html"}
+        encoding = "ISO-8859-1"          # what requests would have picked
+        text = body.decode("ISO-8859-1")  # ...and the mojibake it would return
+
+    decoded = watch.decode_response(NoCharsetResponse())
+    assert arabic in decoded
+    assert watch.classify(decoded)[0] == watch.STATE_CLOSED
+    # Prove the bug this guards against is real.
+    assert arabic not in NoCharsetResponse.text
+
+
+def test_an_explicit_charset_in_the_header_is_respected():
+    class WindowsResponse:
+        content = "café".encode("windows-1256", errors="replace")
+        headers = {"Content-Type": "text/html; charset=windows-1256"}
+        encoding = "windows-1256"
+        text = "café"
+
+    assert watch.decode_response(WindowsResponse()) == "café"
+
+
+def test_an_unknown_charset_falls_back_to_utf8_instead_of_crashing():
+    class WeirdResponse:
+        content = "مرحبا".encode("utf-8")
+        headers = {"Content-Type": "text/html"}
+        encoding = None
+        text = ""
+
+    WeirdResponse.content = b'<meta charset="x-nonsense-9000">' + WeirdResponse.content
+    assert "مرحبا" in watch.decode_response(WeirdResponse())
