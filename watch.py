@@ -1467,6 +1467,20 @@ def cmd_dump(url: str = None) -> int:
     print("content-type   : %s" % response.headers.get("Content-Type"))
     print("bytes          : %d" % len(response.content))
 
+    # Cache provenance. The site states that it accepts questions at the top of
+    # every hour with a per-hour quota, yet polls landing two seconds past the
+    # hour have never once seen the form. Either the quota fills that fast, or
+    # an edge cache is serving us a copy minted before the window opened - in
+    # which case the watcher can never see OPEN no matter how fast it polls.
+    # These headers are what tells the two apart: a non-zero Age, or a HIT from
+    # any of the usual CDNs, means we are reading the past.
+    for header in ("Age", "Date", "Last-Modified", "Expires", "Cache-Control",
+                   "ETag", "Vary", "X-Cache", "X-Cache-Hits", "CF-Cache-Status",
+                   "X-Served-By", "X-Varnish", "Via", "Server"):
+        value = response.headers.get(header)
+        if value:
+            print("%-14s : %s" % (header.lower(), value))
+
     normalized = normalize_arabic(html_to_text(page))
     for label, needle in [
         ("CLOSED_MARKER", CLOSED_MARKER),
