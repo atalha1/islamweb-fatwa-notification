@@ -136,24 +136,54 @@ does. Nothing in the poll loop can crash the run.
 
 ## Schedule
 
-`.github/workflows/watch.yml` runs on cron `52 * * * *` (UTC). Each run polls
-every 20 seconds until 12 minutes past the hour, then exits. It exits
-immediately after the first successful alert.
+`.github/workflows/watch.yml` runs on cron `40 6-19 * * *` (UTC). A run wakes at
+`:40`, **sleeps until one minute before the hour**, then polls every 20 seconds
+until `:15` past, and exits. It exits immediately after the first successful
+alert.
 
 Makkah is UTC+3 with no DST, so the top of the hour is the same instant in both
 zones — no conversion is needed for the schedule itself.
 
-> **Cost.** A run polls for up to 20 minutes, so this is ~480 Actions minutes a
-> day. That is free on a public repository and blows through the free quota in
-> about four days on a private one. See Step 0 of the setup.
+### Why the cron fires twenty minutes early
 
-> **Known limitation.** GitHub's scheduler is best-effort and can fire several
-> minutes late when the platform is busy. `watch.py` computes its window from
-> the real wall clock rather than from its start time, so a late start still
-> polls up to `:12`; but if a run starts after `:12` it records one observation
-> and exits. If you find you are missing windows, change the cron to
-> `45 * * * *` — the script just polls a little longer. Actions minutes are
-> free on public repositories.
+GitHub's scheduler is best-effort and routinely fires late — sometimes by more
+than fifteen minutes. The window being watched is only `:00`–`:15` wide, so a
+cron at `:52` running twenty minutes late would start *after* the window had
+already shut and poll nothing at all, with nothing in the log to say a window
+had been missed. Firing at `:40` buys twenty minutes of tolerance.
+
+The lead time costs the site nothing, because the run sleeps through it rather
+than polling a page that cannot have opened yet
+(`schedule.window_start_lead_seconds`). Request volume is slightly *lower* than
+the old `:52`-to-`:12` schedule, not higher.
+
+Three settings have to stay consistent, and `tests/test_config.py` fails the
+build if they drift apart:
+
+| Setting | Shipped | Rule |
+| --- | --- | --- |
+| cron minute in `watch.yml` | `:40` | ≥ `lookahead_from_minute`, and ≥ 15 min before the hour |
+| `schedule.lookahead_from_minute` | `:35` | above `window_end_minute`, at or below the cron minute |
+| `schedule.window_end_minute` | `:15` | below `lookahead_from_minute` |
+
+`lookahead_from_minute` is how a run knows *which* opening it is waiting for: a
+run starting at or after that minute is early for the next hour, anything
+earlier belongs to the hour it started in. The gap between `window_end_minute`
+and `lookahead_from_minute` (`:16`–`:34` as shipped) is a deliberate dead zone —
+a run that fires there is too late for this hour's window and declines to hold a
+runner for forty minutes waiting for the next one, which would delay the run
+actually scheduled for it.
+
+> **Cost.** A run lives for up to ~35 minutes, most of it asleep, so this is
+> ~490 Actions minutes a day. That is free on a public repository and blows
+> through the free quota in about four days on a private one. See Step 0 of the
+> setup.
+
+> **First runs.** GitHub does not always start a newly added cron immediately —
+> a brand-new repository can go a few hours before its first scheduled run
+> appears. Until then the Actions tab shows only `push` and `workflow_dispatch`
+> runs. Filter the tab by `event: schedule` to check; if that list is empty, the
+> watcher has not yet run on its own, whatever the page said at the time.
 
 **Politeness:** 20s minimum interval, hard floor in code; a descriptive
 `User-Agent` naming this repository so an operator can find a human; no retry

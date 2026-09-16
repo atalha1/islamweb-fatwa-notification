@@ -8,17 +8,50 @@ def utc(hour, minute):
     return datetime(2026, 9, 15, hour, minute, tzinfo=timezone.utc)
 
 
-def test_window_runs_from_52_past_to_12_past_the_next_hour():
-    assert watch.window_deadline(utc(13, 52)) == utc(14, 12)
+def test_a_run_fired_on_time_targets_the_next_hours_window():
+    assert watch.window_deadline(utc(13, 40)) == utc(14, 15)
 
 
 def test_a_delayed_run_still_targets_the_hour_it_was_scheduled_for():
-    # Actions fired the :52 job late, at 14:03. The window is still 14:12.
-    assert watch.window_deadline(utc(14, 3)) == utc(14, 12)
+    # Actions fired the :40 job late, at 14:03. The window is still 14:15.
+    assert watch.window_deadline(utc(14, 3)) == utc(14, 15)
 
 
 def test_a_run_that_starts_after_the_window_has_a_deadline_in_the_past():
     assert watch.window_deadline(utc(14, 20)) < utc(14, 20)
+
+
+def test_the_cron_lead_absorbs_a_late_scheduler_without_losing_the_window():
+    """The failure this schedule exists to prevent: a late run polling nothing.
+
+    GitHub's scheduler is best-effort. Whatever it does to a job fired at
+    :40 - on time, or anything up to the top of the hour late - the run must
+    still come away with polling time inside the window.
+    """
+    for late_by in range(0, 21):           # :40 through :00, the design margin
+        started = utc(13, 40) + timedelta(minutes=late_by)
+        deadline = watch.window_deadline(started)
+        assert deadline == utc(14, 15), "%s retargeted the wrong hour" % started
+        assert deadline > started, "%s had no polling time left" % started
+
+
+def test_polling_waits_for_the_hour_instead_of_burning_the_lead_time():
+    """The lead time is scheduler slack, not licence to poll for 20 minutes."""
+    opens = watch.window_start(utc(13, 40))
+    assert opens == utc(14, 0) - timedelta(seconds=watch.WINDOW_START_LEAD_SECONDS)
+    assert opens > utc(13, 40), "a run fired on time must sleep, not poll"
+    assert opens < watch.window_deadline(utc(13, 40))
+
+
+def test_a_run_fired_in_the_dead_zone_declines_rather_than_squatting():
+    """Too late for this hour, too early to hold a runner until the next one."""
+    started = utc(14, 25)                  # between window_end and lookahead
+    assert watch.window_deadline(started) < started
+
+
+def test_the_hard_stop_cannot_cut_a_window_short():
+    longest = timedelta(minutes=60 - watch.LOOKAHEAD_FROM_MINUTE + watch.WINDOW_END_MINUTE)
+    assert watch.MAX_RUN_SECONDS >= longest.total_seconds()
 
 
 def test_site_time_is_utc_plus_three_all_year():
