@@ -2,14 +2,16 @@
 
 Watching **Islamweb fatwa submission** (https://www.islamweb.net/ar/fatwa/%D8%A7%D8%B3%D8%A3%D9%84-%D8%B9%D9%86-%D9%81%D8%AA%D9%88%D9%89).
 
-- Polls logged: **65**
-- Days covered: **1** (2026-09-15 to 2026-09-15)
+- Polls logged: **128**
+- Days covered: **2** (2026-09-15 to 2026-09-16)
 - Active hours: 10:00-23:00 Makkah
 
 ## Open rate by hour (Makkah time)
 
 | Hour | Polls | OPEN | CLOSED | UNKNOWN | % open |
 |-----:|------:|-----:|-------:|--------:|-------:|
+| 09:00 | 39 | 0 | 39 | 0 | 0% |
+| 10:00 | 24 | 0 | 24 | 0 | 0% |
 | 15:00 | 1 | 0 | 1 | 0 | 0% |
 | 18:00 | 46 | 0 | 46 | 0 | 0% |
 | 19:00 | 17 | 0 | 17 | 0 | 0% |
