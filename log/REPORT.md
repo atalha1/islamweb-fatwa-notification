@@ -2,7 +2,7 @@
 
 Watching **Islamweb fatwa submission** (https://www.islamweb.net/ar/fatwa/%D8%A7%D8%B3%D8%A3%D9%84-%D8%B9%D9%86-%D9%81%D8%AA%D9%88%D9%89).
 
-- Polls logged: **949**
+- Polls logged: **950**
 - Days covered: **2** (2026-09-15 to 2026-09-16)
 - Active hours: 10:00-23:00 Makkah
 
@@ -24,7 +24,7 @@ Watching **Islamweb fatwa submission** (https://www.islamweb.net/ar/fatwa/%D8%A7
 | 20:00 | 63 | 0 | 63 | 0 | 0% |
 | 21:00 | 62 | 0 | 62 | 0 | 0% |
 | 22:00 | 64 | 0 | 64 | 0 | 0% |
-| 23:00 | 24 | 0 | 24 | 0 | 0% |
+| 23:00 | 25 | 0 | 25 | 0 | 0% |
 
 ## Windows seen open
 
