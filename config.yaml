@@ -54,9 +54,28 @@ schedule:
   # Politeness floor. The code refuses to go below 20 seconds.
   poll_interval_seconds: 20
   # Stop polling this many minutes past the top of the hour.
-  window_end_minute: 12
+  window_end_minute: 15
   # Consecutive OPEN readings required before an alert fires.
   consecutive_open_required: 2
+
+  # From this minute on, a starting run is understood to be waiting for the
+  # NEXT hour's opening rather than the one just gone. GitHub's scheduler is
+  # best-effort and routinely fires several minutes late, so this must be at
+  # or below the cron minute in .github/workflows/watch.yml - otherwise a run
+  # that fires exactly on time reads itself as having missed the window it is
+  # in fact early for, and polls nothing. It must also stay above
+  # window_end_minute; the gap between the two (:16-:34 as shipped) is the
+  # dead zone where a run is too late for this hour's window and declines to
+  # squat on a runner for forty minutes waiting for the next one.
+  lookahead_from_minute: 35
+
+  # Start polling this many seconds before the top of the target hour. The
+  # window cannot open before :00, so earlier polling is pure load on the
+  # site: a run that starts ahead of this point sleeps until it rather than
+  # hammering the page for twenty minutes. This is what buys the schedule its
+  # tolerance for a late start - the cron fires at :40, but the first request
+  # is not made until :59 no matter how early the runner picked the job up.
+  window_start_lead_seconds: 60
 
 # ---------------------------------------------------------------------------
 # Answer tracking: watch a submitted question until its answer is published.

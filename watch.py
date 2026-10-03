@@ -72,7 +72,6 @@ STATE_CLOSED = "CLOSED"
 STATE_UNKNOWN = "UNKNOWN"
 
 HTTP_TIMEOUT = 25
-MAX_RUN_SECONDS = 22 * 60  # hard stop, below the workflow timeout
 POLL_INTERVAL_FLOOR = 20   # politeness floor; config cannot go below this
 
 
@@ -102,6 +101,8 @@ DEFAULT_CONFIG = {
         "poll_interval_seconds": 20,
         "window_end_minute": 12,
         "consecutive_open_required": 2,
+        "lookahead_from_minute": 40,
+        "window_start_lead_seconds": 60,
     },
     "tracking": {
         "enabled": True,
@@ -203,6 +204,21 @@ POLL_INTERVAL_SECONDS = max(POLL_INTERVAL_FLOOR,
                             int(CONFIG["schedule"]["poll_interval_seconds"]))
 WINDOW_END_MINUTE = int(CONFIG["schedule"]["window_end_minute"])
 CONSECUTIVE_OPEN_REQUIRED = int(CONFIG["schedule"]["consecutive_open_required"])
+LOOKAHEAD_FROM_MINUTE = int(CONFIG["schedule"]["lookahead_from_minute"])
+WINDOW_START_LEAD_SECONDS = max(0, int(CONFIG["schedule"]["window_start_lead_seconds"]))
+
+if not WINDOW_END_MINUTE < LOOKAHEAD_FROM_MINUTE < 60:
+    raise SystemExit(
+        "config error: schedule.lookahead_from_minute (%d) must be greater than "
+        "schedule.window_end_minute (%d) and below 60. Below the window end, "
+        "every run would roll forward to the next hour and never poll the one "
+        "it was fired for."
+        % (LOOKAHEAD_FROM_MINUTE, WINDOW_END_MINUTE))
+
+# Worst case: a run that starts the moment the lookahead opens and polls right
+# through to the window's end. Derived rather than hard-coded so that changing
+# the schedule cannot silently leave the hard stop cutting a window short.
+MAX_RUN_SECONDS = (60 - LOOKAHEAD_FROM_MINUTE + WINDOW_END_MINUTE + 2) * 60
 
 TRACKING_ENABLED = bool(CONFIG["tracking"]["enabled"])
 TRACK_URL_TEMPLATE = CONFIG["tracking"]["url_template"]
@@ -1123,12 +1139,31 @@ def poll_once(session: requests.Session):
     return 200, state_name, detail
 
 
+def target_top_of_hour(now: datetime) -> datetime:
+    """The opening this run is waiting for.
+
+    Before LOOKAHEAD_FROM_MINUTE the run belongs to the hour it started in;
+    from that minute on it is early for the next one. A run that starts in
+    between - after this hour's window closed but before the lookahead opens -
+    keeps the hour just gone, which leaves it a deadline in the past and so
+    ends the run immediately. That is deliberate: a very late run would
+    otherwise hold the runner until the next opening and, under the workflow's
+    concurrency group, delay the run actually scheduled for it.
+    """
+    top_of_hour = now.replace(minute=0, second=0, microsecond=0)
+    if now.minute >= LOOKAHEAD_FROM_MINUTE:
+        top_of_hour += timedelta(hours=1)
+    return top_of_hour
+
+
 def window_deadline(now: datetime) -> datetime:
     """End of this run's polling window: WINDOW_END_MINUTE past the target hour."""
-    top_of_hour = now.replace(minute=0, second=0, microsecond=0)
-    if now.minute >= 40:  # started before the top of the next hour
-        top_of_hour += timedelta(hours=1)
-    return top_of_hour + timedelta(minutes=WINDOW_END_MINUTE)
+    return target_top_of_hour(now) + timedelta(minutes=WINDOW_END_MINUTE)
+
+
+def window_start(now: datetime) -> datetime:
+    """First moment worth polling: shortly before the target hour opens."""
+    return target_top_of_hour(now) - timedelta(seconds=WINDOW_START_LEAD_SECONDS)
 
 
 def target_hour_local(now: datetime) -> int:
@@ -1227,6 +1262,16 @@ def run_watch(interval: int = POLL_INTERVAL_SECONDS) -> int:
     hard_stop = started + timedelta(seconds=MAX_RUN_SECONDS)
     log("run started %s | window closes %s | interval %ds"
         % (started.strftime("%H:%M:%SZ"), deadline.strftime("%H:%M:%SZ"), interval))
+
+    # The cron fires well before the hour so that a late scheduler start is
+    # still early. When it is not late, that lead time is not ours to spend on
+    # the site: wait it out rather than polling a page that cannot have opened.
+    opens_at = window_start(started)
+    waiting = (opens_at - utc_now()).total_seconds()
+    if waiting > 0:
+        log("window opens %s - sleeping %dm%02ds before the first poll"
+            % (opens_at.strftime("%H:%M:%SZ"), waiting // 60, waiting % 60))
+        time.sleep(waiting)
 
     consecutive_open = 0
     polls = 0
@@ -1393,7 +1438,10 @@ def cmd_show_config() -> int:
     print("timezone       : %s (UTC%+d)" % (TZ_LABEL, TZ_OFFSET_HOURS))
     print("active hours   : %s" % describe_active_hours())
     print("poll interval  : %ds" % POLL_INTERVAL_SECONDS)
+    print("window starts  : %ds before the hour" % WINDOW_START_LEAD_SECONDS)
     print("window ends    : :%02d past the hour" % WINDOW_END_MINUTE)
+    print("looks ahead at : :%02d past the hour" % LOOKAHEAD_FROM_MINUTE)
+    print("max run time   : %dm" % (MAX_RUN_SECONDS // 60))
     print("open needs     : %d consecutive OPEN polls" % CONSECUTIVE_OPEN_REQUIRED)
     print("closed markers : %s" % ", ".join(CLOSED_MARKERS))
     print("closed fallback: %s" % ", ".join(CLOSED_MARKER_FALLBACKS))
@@ -1418,6 +1466,20 @@ def cmd_dump(url: str = None) -> int:
     print("http           : %s" % response.status_code)
     print("content-type   : %s" % response.headers.get("Content-Type"))
     print("bytes          : %d" % len(response.content))
+
+    # Cache provenance. The site states that it accepts questions at the top of
+    # every hour with a per-hour quota, yet polls landing two seconds past the
+    # hour have never once seen the form. Either the quota fills that fast, or
+    # an edge cache is serving us a copy minted before the window opened - in
+    # which case the watcher can never see OPEN no matter how fast it polls.
+    # These headers are what tells the two apart: a non-zero Age, or a HIT from
+    # any of the usual CDNs, means we are reading the past.
+    for header in ("Age", "Date", "Last-Modified", "Expires", "Cache-Control",
+                   "ETag", "Vary", "X-Cache", "X-Cache-Hits", "CF-Cache-Status",
+                   "X-Served-By", "X-Varnish", "Via", "Server"):
+        value = response.headers.get(header)
+        if value:
+            print("%-14s : %s" % (header.lower(), value))
 
     normalized = normalize_arabic(html_to_text(page))
     for label, needle in [

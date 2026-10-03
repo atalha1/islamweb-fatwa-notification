@@ -4,10 +4,10 @@ name: watch
 
 on:
   schedule:
-    # 52 minutes past the hour, for the hours whose opening we care about.
+    # 40 minutes past the hour, for the hours whose opening we care about.
     #
-    # A run starting at HH:52 UTC is waiting for the (HH+1):00 opening.
-    # Makkah is UTC+3 with no DST, so 06:52-19:52 UTC covers the 10:00
+    # A run starting at HH:40 UTC is waiting for the (HH+1):00 opening.
+    # Makkah is UTC+3 with no DST, so 06:40-19:40 UTC covers the 10:00
     # through 23:00 Makkah openings and stays quiet from midnight to 10:00
     # Makkah - 14 runs a day instead of 24.
     #
@@ -15,10 +15,16 @@ on:
     # this cron just avoids starting runs that would exit immediately. If you
     # change one, change the other.
     #
-    # NOTE: GitHub's scheduler is best-effort and can fire several minutes
-    # late under load. watch.py computes its own window from the wall clock,
-    # so a late start still polls up to :12.
-    - cron: '52 6-19 * * *'
+    # WHY :40 AND NOT :52. GitHub's scheduler is best-effort and routinely
+    # fires late - occasionally by more than fifteen minutes. The window being
+    # watched is only :00 to :15, so a :52 cron that ran twenty minutes late
+    # would start after the window had already closed and poll nothing at all,
+    # silently. Firing at :40 buys twenty minutes of tolerance, and costs the
+    # site nothing: watch.py sleeps until `window_start_lead_seconds` before
+    # the hour rather than polling through the lead time. Keep this at or
+    # above `schedule.lookahead_from_minute` in config.yaml - tests/test_config.py
+    # fails the build if the two drift apart.
+    - cron: '40 6-19 * * *'
   workflow_dispatch:
     inputs:
       url:
@@ -43,7 +49,11 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # A run fired at :40 sleeps to :59 and may poll to :15, so the job can
+    # legitimately live for ~35 minutes. watch.py enforces its own hard stop
+    # (MAX_RUN_SECONDS, derived from config.yaml) below this ceiling; this is
+    # only the backstop for a process that hangs.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

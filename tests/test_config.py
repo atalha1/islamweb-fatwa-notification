@@ -171,3 +171,45 @@ def test_examples_cover_both_a_positive_and_a_negative_utc_offset():
     offsets = {watch.load_config(p)["site"]["timezone_offset_hours"]
                for p in (watch.ROOT / "examples").glob("*.yaml")}
     assert any(o < 0 for o in offsets), "an example should cover a western timezone"
+
+
+# --- the cron and the config must agree ----------------------------------
+
+def _watch_cron_minutes():
+    """Every cron minute the watch workflow schedules itself on."""
+    import pathlib
+    import re
+    text = (pathlib.Path(__file__).resolve().parents[1]
+            / ".github" / "workflows" / "watch.yml").read_text(encoding="utf-8")
+    crons = re.findall(r"^\s*-\s*cron:\s*'([^']+)'", text, re.MULTILINE)
+    assert crons, "watch.yml has no schedule - the watcher would never fire"
+    return [int(c.split()[0]) for c in crons]
+
+
+def test_the_cron_fires_no_earlier_than_the_lookahead():
+    """The coupling that silently breaks everything if it drifts.
+
+    watch.py decides which opening a run is waiting for by comparing the
+    minute it started against schedule.lookahead_from_minute. If the cron
+    fired before that minute, a run starting exactly on time would read
+    itself as belonging to the hour just gone, find a deadline already in the
+    past, and exit without a single poll - every hour, with nothing in the
+    log to say why.
+    """
+    for minute in _watch_cron_minutes():
+        assert minute >= watch.LOOKAHEAD_FROM_MINUTE, (
+            "watch.yml fires at :%02d but config.yaml only looks ahead from "
+            ":%02d" % (minute, watch.LOOKAHEAD_FROM_MINUTE))
+
+
+def test_the_cron_leaves_room_for_a_late_scheduler():
+    """A window only 15 minutes wide needs more than a few minutes of lead."""
+    for minute in _watch_cron_minutes():
+        assert 60 - minute >= 15, (
+            "watch.yml fires at :%02d, only %d minutes before the opening - "
+            "GitHub's scheduler is routinely later than that"
+            % (minute, 60 - minute))
+
+
+def test_the_lookahead_sits_above_the_window_it_closes():
+    assert watch.WINDOW_END_MINUTE < watch.LOOKAHEAD_FROM_MINUTE < 60
