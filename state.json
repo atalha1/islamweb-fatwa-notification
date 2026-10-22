@@ -4,7 +4,7 @@
   "paused_at_utc": null,
   "telegram_update_offset": 588782587,
   "last_answer_check_utc": null,
-  "last_unknown_alert_utc": null,
+  "last_unknown_alert_utc": "2026-10-22T17:52:22.758811+00:00",
   "last_alert_utc": null,
   "last_alert_question_id": null,
   "pending_notification_retry": null
