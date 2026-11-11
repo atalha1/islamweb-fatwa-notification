@@ -2,8 +2,8 @@
 
 Watching **Islamweb fatwa submission** (https://www.islamweb.net/ar/fatwa/%D8%A7%D8%B3%D8%A3%D9%84-%D8%B9%D9%86-%D9%81%D8%AA%D9%88%D9%89).
 
-- Polls logged: **4775**
-- Days covered: **57** (2026-09-15 to 2026-11-10)
+- Polls logged: **4840**
+- Days covered: **58** (2026-09-15 to 2026-11-11)
 - Active hours: 10:00-23:00 Makkah
 
 ## Open rate by hour (Makkah time)
@@ -18,8 +18,8 @@ Watching **Islamweb fatwa submission** (https://www.islamweb.net/ar/fatwa/%D8%A7
 | 14:00 | 333 | 0 | 333 | 0 | 0% |
 | 15:00 | 433 | 0 | 432 | 1 | 0% |
 | 16:00 | 476 | 0 | 476 | 0 | 0% |
-| 17:00 | 573 | 0 | 573 | 0 | 0% |
-| 18:00 | 387 | 0 | 387 | 0 | 0% |
+| 17:00 | 616 | 0 | 615 | 1 | 0% |
+| 18:00 | 409 | 0 | 409 | 0 | 0% |
 | 19:00 | 297 | 0 | 296 | 1 | 0% |
 | 20:00 | 444 | 0 | 440 | 4 | 0% |
 | 21:00 | 417 | 0 | 417 | 0 | 0% |
@@ -32,7 +32,7 @@ No OPEN poll recorded yet.
 
 ## UNKNOWN readings
 
-9 of 4775 polls could not be classified. A run of these means the page markup changed - run `python watch.py --dump` and update `config.yaml`.
+10 of 4840 polls could not be classified. A run of these means the page markup changed - run `python watch.py --dump` and update `config.yaml`.
 
 ---
 
